@@ -35,6 +35,7 @@ import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo } from './types';
 import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
 import { optimizeRoutes } from './lib/optimization';
+import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -229,6 +230,21 @@ function MainApp() {
   const [isParsing, setIsParsing] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
 
+  const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
+  const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
+  const visitLimit = getVisitLimit(userPlan);
+
+  const promptUpgrade = (reason: string) => setUpgradeReason(reason);
+  const upgradeToPro = () => {
+    setUserPlan('pro');
+    setUserPlanState('pro');
+    setUpgradeReason(null);
+  };
+  const downgradeToFree = () => {
+    setUserPlan('free');
+    setUserPlanState('free');
+  };
+
   useEffect(() => {
     localStorage.setItem('repair_settings', JSON.stringify(settings));
   }, [settings]);
@@ -238,7 +254,12 @@ function MainApp() {
   }, [visits]);
 
   const handleAddVisit = () => {
-    if (visits.length >= 5) return;
+    if (visits.length >= visitLimit) {
+      if (userPlan === 'free') {
+        promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+      }
+      return;
+    }
     const newVisit: Visit = {
       id: Math.random().toString(36).substr(2, 9),
       address: '',
@@ -286,7 +307,11 @@ function MainApp() {
           difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
           timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined
         }));
-        setVisits([...visits, ...newVisits].slice(0, 5));
+        const merged = [...visits, ...newVisits];
+        if (userPlan === 'free' && merged.length > visitLimit) {
+          promptUpgrade(`読み取った${newVisits.length}件のうち${visitLimit - visits.length}件のみ登録しました。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+        }
+        setVisits(merged.slice(0, visitLimit));
         setInputText('');
       }
     } catch (error) {
@@ -316,7 +341,11 @@ function MainApp() {
           difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
           timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined
         }));
-        setVisits([...visits, ...newVisits].slice(0, 5));
+        const merged = [...visits, ...newVisits];
+        if (userPlan === 'free' && merged.length > visitLimit) {
+          promptUpgrade(`画像から${newVisits.length}件読み取りましたが、無料プランは${visitLimit}件まで。Proで${getVisitLimit('pro')}件まで登録できます。`);
+        }
+        setVisits(merged.slice(0, visitLimit));
       }
     } catch (error) {
       console.error(error);
@@ -470,12 +499,28 @@ function MainApp() {
             ルート最適化 <span className="text-xs font-normal text-slate-400">v1.2</span>
           </h1>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
            {activeTab === 'result' && (
              <div className="hidden sm:flex flex-col items-end text-xs mr-2">
                 <span className="text-secondary">起点</span>
                 <span className="font-medium truncate max-w-[150px]">{settings.homeAddress}</span>
              </div>
+           )}
+           {userPlan === 'pro' ? (
+             <button
+               onClick={downgradeToFree}
+               title="開発用: Freeに戻す"
+               className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40"
+             >
+               Pro
+             </button>
+           ) : (
+             <button
+               onClick={() => promptUpgrade('Proにアップグレードすると、最大15件の訪問・GPS現在地起点・月次レポートが使えます。')}
+               className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded bg-slate-800 text-blue-300 border border-blue-500/30 hover:bg-blue-500/10"
+             >
+               Free · アップグレード
+             </button>
            )}
         </div>
       </nav>
@@ -595,14 +640,29 @@ function MainApp() {
                 </div>
               ))}
 
-              {visits.length < 5 && (
-                <button 
+              {visits.length < visitLimit ? (
+                <button
                   onClick={handleAddVisit}
                   className="w-full py-6 border border-dashed border-ui rounded-xl flex flex-col items-center justify-center text-secondary hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
                 >
                   <Plus className="w-6 h-6 mb-1 text-blue-500" />
-                  <span className="text-xs font-bold uppercase tracking-widest">訪問先を追加</span>
+                  <span className="text-xs font-bold uppercase tracking-widest">
+                    訪問先を追加 ({visits.length}/{visitLimit})
+                  </span>
                 </button>
+              ) : userPlan === 'free' ? (
+                <button
+                  onClick={() => promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`)}
+                  className="w-full py-6 border border-dashed border-amber-500/40 bg-amber-500/5 rounded-xl flex flex-col items-center justify-center text-amber-300 hover:bg-amber-500/10 transition-all"
+                >
+                  <span className="text-base mb-1">⚡</span>
+                  <span className="text-xs font-bold uppercase tracking-widest">Proで{getVisitLimit('pro')}件まで解放</span>
+                  <span className="text-[10px] mt-1 text-amber-300/70">月額¥780</span>
+                </button>
+              ) : (
+                <div className="w-full py-4 text-center text-xs text-secondary">
+                  上限 {visitLimit}件に到達しました
+                </div>
               )}
             </div>
 
@@ -942,6 +1002,17 @@ function MainApp() {
         </div>
       )}
 
+      {/* Upgrade Modal */}
+      <AnimatePresence>
+        {upgradeReason && (
+          <UpgradeModal
+            reason={upgradeReason}
+            onClose={() => setUpgradeReason(null)}
+            onUpgrade={upgradeToPro}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Lunch Spots Edit Modal */}
       <AnimatePresence>
         {showLunchSettings && (
@@ -970,6 +1041,58 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function UpgradeModal({ reason, onClose, onUpgrade }: { reason: string; onClose: () => void; onUpgrade: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.92, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-xl">⚡</div>
+          <div>
+            <h2 className="text-lg font-bold text-amber-200">Proにアップグレード</h2>
+            <p className="text-[11px] text-amber-300/80">月額 ¥780 / 解約はいつでも</p>
+          </div>
+        </div>
+        <p className="text-sm text-gray-300 mb-5">{reason}</p>
+        <div className="bg-slate-800/50 rounded-lg p-4 border border-ui mb-5 space-y-2 text-xs">
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 訪問先 1日 <strong className="text-white">15件</strong> まで</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> GPS現在地から再最適化</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 月次節約レポート</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> マルチデバイス同期（近日対応）</div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-800 hover:bg-slate-700 border border-ui"
+          >
+            あとで
+          </button>
+          <button
+            onClick={onUpgrade}
+            className="flex-[1.4] py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-900"
+          >
+            Proを試す
+          </button>
+        </div>
+        <p className="text-[10px] text-secondary text-center mt-3">
+          （現在はデモ。決済連携は今後対応予定）
+        </p>
+      </motion.div>
+    </motion.div>
   );
 }
 
