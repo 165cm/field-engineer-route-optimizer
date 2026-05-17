@@ -36,6 +36,7 @@ import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo 
 import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
 import { optimizeRoutes, computeInputOrderBaseline, Baseline } from './lib/optimization';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
+import { isDemoMode } from './lib/demoMode';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -410,6 +411,14 @@ function MainApp() {
   };
 
   const handleParseText = async () => {
+    if (isDemoMode()) {
+      showNotice({
+        kind: 'info',
+        title: 'デモではAI読み取りは無効です',
+        detail: 'Gemini APIキーを安全に公開できないため、デモ版ではテキスト解析を無効にしています。下の「訪問先を追加」から手動でご登録ください。',
+      });
+      return;
+    }
     if (!inputText.trim()) return;
     setIsParsing(true);
     try {
@@ -446,6 +455,14 @@ function MainApp() {
   };
 
   const handleParseImage = async (base64: string, mimeType: string) => {
+    if (isDemoMode()) {
+      showNotice({
+        kind: 'info',
+        title: 'デモではAI画像読み取りは無効です',
+        detail: 'Gemini APIキーを安全に公開できないため、デモ版では画像解析を無効にしています。手動入力をご利用ください。',
+      });
+      return;
+    }
     setIsParsingImage(true);
     try {
       const response = await fetch("/api/parse-image", {
@@ -622,6 +639,13 @@ function MainApp() {
 
   return (
     <div className="bg-bg text-gray-200 min-h-screen font-sans border-ui overflow-x-hidden pb-20">
+      {/* Demo banner */}
+      {isDemoMode() && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-[11px] py-1.5 px-4 text-center">
+          <span className="font-bold">DEMO</span> · プレビュー版です。AI読み取り(テキスト/画像)は無効、Maps APIは制限付きで動作します
+        </div>
+      )}
+
       {/* Header */}
       <nav className="sticky top-0 z-40 h-16 border-b border-ui flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md">
         <div>
@@ -637,14 +661,37 @@ function MainApp() {
                 <span className="font-medium truncate max-w-[150px]">{settings.homeAddress}</span>
              </div>
            )}
-           {userPlan === 'pro' ? (
-             <button
-               onClick={downgradeToFree}
-               title="開発用: Freeに戻す"
-               className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40"
-             >
+           {isDemoMode() ? (
+             // Demo build: simple two-state toggle so reviewers can flip
+             // between Free / Pro without the upsell modal in the way.
+             <div className="flex items-center gap-2">
+               <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold hidden sm:inline">Plan</span>
+               <button
+                 onClick={() => (userPlan === 'pro' ? downgradeToFree() : upgradeToPro())}
+                 className={cn(
+                   "relative inline-flex items-center h-6 w-[88px] rounded-full border transition-colors",
+                   userPlan === 'pro'
+                     ? "bg-amber-500/20 border-amber-500/40"
+                     : "bg-slate-800 border-ui"
+                 )}
+                 title="クリックで Free / Pro を切り替え (デモ用)"
+               >
+                 <span className={cn(
+                   "absolute text-[10px] font-bold uppercase tracking-wider transition-all",
+                   userPlan === 'pro' ? "left-2 text-amber-300" : "left-2 text-slate-500"
+                 )}>
+                   {userPlan === 'pro' ? 'Pro' : 'Free'}
+                 </span>
+                 <span className={cn(
+                   "absolute w-5 h-5 rounded-full bg-white/90 shadow-md transition-transform",
+                   userPlan === 'pro' ? "translate-x-[60px]" : "translate-x-0.5"
+                 )} />
+               </button>
+             </div>
+           ) : userPlan === 'pro' ? (
+             <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
                Pro
-             </button>
+             </span>
            ) : (
              <button
                onClick={() => promptUpgrade('Proにアップグレードすると、最大15件の訪問・GPS現在地起点・月次レポートが使えます。')}
@@ -845,9 +892,14 @@ function MainApp() {
             </div>
 
             {/* AI Input — voice/camera/text */}
-            <div className="bg-card p-4 rounded-xl border border-ui mt-4">
+            <div className={cn("bg-card p-4 rounded-xl border border-ui mt-4", isDemoMode() && "opacity-60")}>
               <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight mb-3">
                 <ClipboardList className="w-4 h-4 text-blue-400" /> AIで一括入力
+                {isDemoMode() && (
+                  <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                    デモでは無効
+                  </span>
+                )}
               </h3>
 
               {/* Prominent CTA row: camera + voice */}
