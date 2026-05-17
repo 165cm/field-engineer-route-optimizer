@@ -233,6 +233,17 @@ function MainApp() {
 
   const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
   const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    try {
+      return !localStorage.getItem('repair_onboarded_v1');
+    } catch {
+      return false;
+    }
+  });
+  const dismissOnboarding = () => {
+    try { localStorage.setItem('repair_onboarded_v1', '1'); } catch {}
+    setShowOnboarding(false);
+  };
   const visitLimit = getVisitLimit(userPlan);
 
   type Notice = {
@@ -244,6 +255,52 @@ function MainApp() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const showNotice = (n: Notice) => setNotice(n);
   const clearNotice = () => setNotice(null);
+
+  const handleLoadSampleAndOptimize = () => {
+    const sample: Visit[] = [
+      { id: 's1', address: '東京都新宿区西新宿2-8-1', customerName: '田中様', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
+      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', customerName: '佐藤様', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
+      { id: 's3', address: '東京都港区六本木6-10-1', customerName: '鈴木様', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
+    ];
+    setVisits(sample);
+    dismissOnboarding();
+    // Run after the state settles so handleOptimize sees the new visits.
+    setTimeout(() => {
+      // handleOptimize closes over `visits` — call it via a fresh closure
+      // by triggering through a microtask + state-driven approach.
+      // Simpler: replicate handleOptimize but pass the sample directly.
+      runOptimizeFor(sample);
+    }, 0);
+  };
+
+  const runOptimizeFor = async (sampleVisits: Visit[]) => {
+    setIsOptimizing(true);
+    try {
+      const updatedSettings = { ...settings };
+      if (!updatedSettings.homeCoords) {
+        updatedSettings.homeCoords = await geocodeAddress(updatedSettings.homeAddress);
+      }
+      const updatedVisits = await Promise.all(sampleVisits.map(async v => {
+        if (v.coords) return v;
+        const coords = await geocodeAddress(v.address);
+        return { ...v, coords };
+      }));
+      setVisits(updatedVisits);
+      setSettings(updatedSettings);
+      const points = [updatedSettings.homeCoords || updatedSettings.homeAddress, ...updatedVisits.map(v => v.coords || v.address)];
+      const matrix = await getDistanceMatrix(points, points);
+      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      setBaseline(computeInputOrderBaseline(updatedVisits, updatedSettings, matrix));
+      setPlans(optimizedPlans);
+      setActiveTab('result');
+      setActivePlanIdx(0);
+    } catch (error) {
+      const { title, detail } = explainError(error, 'サンプルの計算に失敗しました');
+      showNotice({ kind: 'error', title, detail });
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
 
   const handleOptimizeFromCurrentLocation = () => {
     if (userPlan === 'free') {
@@ -1184,6 +1241,16 @@ function MainApp() {
         )}
       </AnimatePresence>
 
+      {/* Onboarding Modal — shown on first run */}
+      <AnimatePresence>
+        {showOnboarding && visits.length === 0 && (
+          <OnboardingModal
+            onTrySample={handleLoadSampleAndOptimize}
+            onClose={dismissOnboarding}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Lunch Spots Edit Modal */}
       <AnimatePresence>
         {showLunchSettings && (
@@ -1212,6 +1279,50 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function OnboardingModal({ onTrySample, onClose }: { onTrySample: () => void; onClose: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.92, y: 20, opacity: 0 }}
+        animate={{ scale: 1, y: 0, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        className="bg-slate-900 border border-blue-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl"
+      >
+        <div className="text-center mb-5">
+          <div className="w-14 h-14 rounded-full bg-blue-500/20 mx-auto flex items-center justify-center text-2xl mb-3">🚗</div>
+          <h2 className="text-xl font-bold text-white mb-1">ルート最適化へようこそ</h2>
+          <p className="text-xs text-secondary">30秒でどれくらい時間とガソリン代が節約できるか体験できます</p>
+        </div>
+        <div className="bg-slate-800/50 rounded-lg border border-ui p-4 mb-5">
+          <p className="text-[11px] text-secondary mb-2 font-bold uppercase tracking-wider">サンプルの内容</p>
+          <ul className="text-xs space-y-1.5 text-gray-300">
+            <li>• 新宿区・渋谷区・港区の訪問3件</li>
+            <li>• AIが最短ルートを自動計算</li>
+            <li>• 入力順巡回比の節約km/分/¥が見られます</li>
+          </ul>
+        </div>
+        <button
+          onClick={onTrySample}
+          className="w-full py-3 rounded-lg text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/30 mb-2"
+        >
+          サンプルで試す（30秒）
+        </button>
+        <button
+          onClick={onClose}
+          className="w-full py-2 rounded-lg text-[11px] font-bold uppercase tracking-wider text-secondary hover:text-white"
+        >
+          スキップして自分で入力
+        </button>
+      </motion.div>
+    </motion.div>
   );
 }
 
