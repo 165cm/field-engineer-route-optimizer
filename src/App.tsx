@@ -37,6 +37,8 @@ import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/go
 import { optimizeRoutes, computeInputOrderBaseline, Baseline } from './lib/optimization';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 import { isDemoMode } from './lib/demoMode';
+import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
+import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -242,6 +244,11 @@ function MainApp() {
 
   const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
   const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
+  const [showAIUnlock, setShowAIUnlock] = useState(false);
+  const [aiUnlocked, setAIUnlocked] = useState<boolean>(() => isAIUnlocked());
+  const [aiUsage, setAIUsage] = useState(() => getDailyUsage());
+  const refreshAIUsage = () => setAIUsage(getDailyUsage());
+  const pendingAIActionRef = useRef<(() => void) | null>(null);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
     try {
       return !localStorage.getItem('repair_onboarded_v1');
@@ -410,40 +417,67 @@ function MainApp() {
     setVisits(visits.filter(v => v.id !== id));
   };
 
-  const handleParseText = async () => {
-    if (isDemoMode()) {
+  const applyParsedVisits = (data: any[], sourceLabel: 'text' | 'image') => {
+    const newVisits = data.map((v: any) => ({
+      id: Math.random().toString(36).substr(2, 9),
+      address: v.address,
+      customerName: v.customerName,
+      memo: v.memo,
+      workMinutes: 60,
+      difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
+      timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined,
+    }));
+    const merged = [...visits, ...newVisits];
+    if (userPlan === 'free' && merged.length > visitLimit) {
+      const overflow = newVisits.length - (visitLimit - visits.length);
+      const verb = sourceLabel === 'image' ? '画像から' : '読み取った';
+      promptUpgrade(`${verb}${newVisits.length}件のうち${overflow}件が無料枠を超えました。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+    }
+    setVisits(merged.slice(0, visitLimit));
+  };
+
+  const requireAIAccess = (retry: () => void): boolean => {
+    if (!isDemoMode()) return true;
+    if (!aiUnlocked) {
+      pendingAIActionRef.current = retry;
+      setShowAIUnlock(true);
+      return false;
+    }
+    if (getDailyUsage().remaining <= 0) {
       showNotice({
         kind: 'info',
-        title: 'デモではAI読み取りは無効です',
-        detail: 'Gemini APIキーを安全に公開できないため、デモ版ではテキスト解析を無効にしています。下の「訪問先を追加」から手動でご登録ください。',
+        title: '本日のAI解析の上限に達しました',
+        detail: 'デモ版は1日10回までご利用いただけます。明日0時にリセットされます。',
       });
-      return;
+      return false;
     }
+    return true;
+  };
+
+  const handleParseText = async () => {
     if (!inputText.trim()) return;
+    if (!requireAIAccess(handleParseText)) return;
     setIsParsing(true);
     try {
-      const response = await fetch("/api/parse-visits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: inputText }),
-      });
-      const data = await response.json();
-      if (Array.isArray(data)) {
-        const newVisits = data.map((v: any) => ({
-          id: Math.random().toString(36).substr(2, 9),
-          address: v.address,
-          customerName: v.customerName,
-          memo: v.memo,
-          workMinutes: 60,
-          difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
-          timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined
-        }));
-        const merged = [...visits, ...newVisits];
-        if (userPlan === 'free' && merged.length > visitLimit) {
-          promptUpgrade(`読み取った${newVisits.length}件のうち${visitLimit - visits.length}件のみ登録しました。Proなら${getVisitLimit('pro')}件まで登録できます。`);
-        }
-        setVisits(merged.slice(0, visitLimit));
+      let data: any[];
+      if (isDemoMode()) {
+        data = await parseVisitsFromTextClient(inputText);
+        consumeAIRequest();
+        refreshAIUsage();
+      } else {
+        const response = await fetch("/api/parse-visits", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: inputText }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json();
+      }
+      if (Array.isArray(data) && data.length > 0) {
+        applyParsedVisits(data, 'text');
         setInputText('');
+      } else {
+        showNotice({ kind: 'info', title: 'テキストから訪問先を抽出できませんでした', detail: '住所が含まれているかご確認ください。' });
       }
     } catch (error) {
       console.error(error);
@@ -455,37 +489,27 @@ function MainApp() {
   };
 
   const handleParseImage = async (base64: string, mimeType: string) => {
-    if (isDemoMode()) {
-      showNotice({
-        kind: 'info',
-        title: 'デモではAI画像読み取りは無効です',
-        detail: 'Gemini APIキーを安全に公開できないため、デモ版では画像解析を無効にしています。手動入力をご利用ください。',
-      });
-      return;
-    }
+    if (!requireAIAccess(() => handleParseImage(base64, mimeType))) return;
     setIsParsingImage(true);
     try {
-      const response = await fetch("/api/parse-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: base64, mimeType }),
-      });
-      const data = await response.json();
-      if (Array.isArray(data)) {
-        const newVisits = data.map((v: any) => ({
-          id: Math.random().toString(36).substr(2, 9),
-          address: v.address,
-          customerName: v.customerName,
-          memo: v.memo,
-          workMinutes: 60,
-          difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
-          timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined
-        }));
-        const merged = [...visits, ...newVisits];
-        if (userPlan === 'free' && merged.length > visitLimit) {
-          promptUpgrade(`画像から${newVisits.length}件読み取りましたが、無料プランは${visitLimit}件まで。Proで${getVisitLimit('pro')}件まで登録できます。`);
-        }
-        setVisits(merged.slice(0, visitLimit));
+      let data: any[];
+      if (isDemoMode()) {
+        data = await parseVisitsFromImageClient(base64, mimeType);
+        consumeAIRequest();
+        refreshAIUsage();
+      } else {
+        const response = await fetch("/api/parse-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base64, mimeType }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json();
+      }
+      if (Array.isArray(data) && data.length > 0) {
+        applyParsedVisits(data, 'image');
+      } else {
+        showNotice({ kind: 'info', title: '画像から訪問先を抽出できませんでした', detail: '別の角度で撮影、または明るい場所で撮り直してみてください。' });
       }
     } catch (error) {
       console.error(error);
@@ -642,7 +666,7 @@ function MainApp() {
       {/* Demo banner */}
       {isDemoMode() && (
         <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-[11px] py-1.5 px-4 text-center">
-          <span className="font-bold">DEMO</span> · プレビュー版です。AI読み取り(テキスト/画像)は無効、Maps APIは制限付きで動作します
+          <span className="font-bold">DEMO</span> · プレビュー版 · AI解析はパスワード制（1日10回）
         </div>
       )}
 
@@ -892,15 +916,35 @@ function MainApp() {
             </div>
 
             {/* AI Input — voice/camera/text */}
-            <div className={cn("bg-card p-4 rounded-xl border border-ui mt-4", isDemoMode() && "opacity-60")}>
-              <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight mb-3">
-                <ClipboardList className="w-4 h-4 text-blue-400" /> AIで一括入力
+            <div className="bg-card p-4 rounded-xl border border-ui mt-4">
+              <div className="flex items-center justify-between mb-3 gap-2">
+                <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
+                  <ClipboardList className="w-4 h-4 text-blue-400" /> AIで一括入力
+                </h3>
                 {isDemoMode() && (
-                  <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded uppercase tracking-wider">
-                    デモでは無効
-                  </span>
+                  aiUnlocked ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-green-300 bg-green-500/10 border border-green-500/30 px-2 py-0.5 rounded">
+                        今日: {aiUsage.used}/{aiUsage.limit}
+                      </span>
+                      <button
+                        onClick={() => { lockAI(); setAIUnlocked(false); }}
+                        title="AIアクセスをロック"
+                        className="text-[10px] text-slate-500 hover:text-slate-300"
+                      >
+                        🔒
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowAIUnlock(true)}
+                      className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 hover:bg-amber-500/25"
+                    >
+                      🔒 パスワード解除
+                    </button>
+                  )
                 )}
-              </h3>
+              </div>
 
               {/* Prominent CTA row: camera + voice */}
               <div className="grid grid-cols-2 gap-2 mb-3">
@@ -1350,6 +1394,26 @@ function MainApp() {
         )}
       </AnimatePresence>
 
+      {/* AI Unlock Modal (demo only) */}
+      <AnimatePresence>
+        {showAIUnlock && (
+          <AIUnlockModal
+            onClose={() => {
+              setShowAIUnlock(false);
+              pendingAIActionRef.current = null;
+            }}
+            onUnlock={() => {
+              setAIUnlocked(true);
+              refreshAIUsage();
+              setShowAIUnlock(false);
+              const cb = pendingAIActionRef.current;
+              pendingAIActionRef.current = null;
+              cb?.();
+            }}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Upgrade Modal */}
       <AnimatePresence>
         {upgradeReason && (
@@ -1399,6 +1463,78 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function AIUnlockModal({ onUnlock, onClose }: { onUnlock: () => void; onClose: () => void }) {
+  const [pw, setPw] = useState('');
+  const [error, setError] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  const submit = () => {
+    if (tryUnlockAI(pw)) {
+      onUnlock();
+    } else {
+      setError('パスワードが違います');
+      setPw('');
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  };
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.92, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-sm w-full p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-xl">🔒</div>
+          <div>
+            <h2 className="text-lg font-bold text-white">AI解析を解除</h2>
+            <p className="text-[11px] text-secondary">パスワードを入力（1日10回まで）</p>
+          </div>
+        </div>
+        <input
+          ref={inputRef}
+          type="password"
+          value={pw}
+          onChange={(e) => { setPw(e.target.value); setError(''); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+          placeholder="パスワード"
+          className={cn(
+            "w-full px-4 py-3 rounded-lg bg-slate-800 border text-white text-sm mb-2 focus:outline-none",
+            error ? "border-red-500/60" : "border-ui focus:border-amber-500/60"
+          )}
+        />
+        {error && <p className="text-[11px] text-red-400 mb-2">{error}</p>}
+        <div className="flex gap-2 mt-3">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-800 hover:bg-slate-700 border border-ui"
+          >
+            キャンセル
+          </button>
+          <button
+            onClick={submit}
+            disabled={!pw}
+            className="flex-[1.4] py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-900 disabled:opacity-40"
+          >
+            解除
+          </button>
+        </div>
+        <p className="text-[10px] text-secondary text-center mt-3 leading-relaxed">
+          このゲートは簡易的なものです。30日間ブラウザに保存されます。
+        </p>
+      </motion.div>
+    </motion.div>
   );
 }
 

@@ -28,19 +28,26 @@
 2. **Secrets を登録**
    Settings → Secrets and variables → Actions → New repository secret
    - `GOOGLE_MAPS_PLATFORM_KEY` … Maps Platform のAPIキー
-3. **APIキーを GCP コンソール側で制限**（露出対策。**必須**）
-   - HTTPリファラ制限: `https://<オーナー>.github.io/<リポジトリ名>/*`
-   - 使用 API を限定: Maps JavaScript, Geocoding, Places, Routes (Distance Matrix)
-   - 各APIに **1日あたりのクォータ上限** (例: 1,000リクエスト/日)
-   - Billing → **予算アラート** (例: ¥3,000/月)
+   - `GEMINI_API_KEY` … Gemini APIキー（パスワード制のAI解析機能で使用）
+3. **APIキーを GCP / AI Studio コンソール側で制限**（露出対策。**必須**）
+   - **Maps キー**
+     - HTTPリファラ制限: `https://<オーナー>.github.io/<リポジトリ名>/*`
+     - 使用 API を限定: Maps JavaScript, Geocoding, Places, Routes (Distance Matrix)
+     - 各APIに **1日あたりのクォータ上限** (例: 1,000リクエスト/日)
+     - Billing → **予算アラート** (例: ¥3,000/月)
+   - **Gemini キー**（**本番と別キー必須**）
+     - AI Studio で 1日あたりのリクエスト上限 (例: 200/日)
+     - Billing → 予算アラート (例: $5/月)
 
 ### デモ版の挙動
 
 - `VITE_DEMO_MODE=true` でビルドされ、Pro プランがデフォルト
 - ヘッダーのトグルで Free / Pro を切替（課金ゲート挙動の確認用）
-- **AI入力（テキスト/画像解析）は無効** — Gemini APIキーを安全に
-  公開できないため。試したい場合はサーバー側プロキシ
-  (Cloudflare Workers 等) を別途用意する必要があります
+- **AI解析（テキスト/画像）はパスワード制**（既定: `setagayass` / 1日10回まで）
+  - 解除状態は 30日間ブラウザに保存
+  - パスワード文字列もGeminiキーもバンドル内にあるため、これはあくまで
+    casual visitorsの抑止用ソフトゲートです。本物の保護はGCP側の
+    クォータ上限で行ってください
 - Maps関連は Maps JavaScript SDK で直接呼び出し（バックエンド不要）
 
 ### 手動デプロイ

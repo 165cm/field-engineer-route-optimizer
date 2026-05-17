@@ -43,6 +43,11 @@ jobs:
           #   - APIs: Maps JS + Geocoding + Places + Routes
           #   - Daily quotas + billing budget alert
           GOOGLE_MAPS_PLATFORM_KEY: ${{ secrets.GOOGLE_MAPS_PLATFORM_KEY }}
+          # Gemini key is also exposed in the bundle (the demo password gate
+          # is only a soft barrier). Use a dedicated key with:
+          #   - Daily quota cap on the AI Studio side (e.g. 200/day)
+          #   - Billing budget alert (e.g. $5/month)
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: npx vite build
 
       - name: Configure Pages
