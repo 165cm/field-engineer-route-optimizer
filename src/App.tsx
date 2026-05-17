@@ -234,6 +234,34 @@ function MainApp() {
   const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
   const visitLimit = getVisitLimit(userPlan);
 
+  type Notice = {
+    kind: 'error' | 'info' | 'success';
+    title: string;
+    detail?: string;
+    onRetry?: () => void;
+  };
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const showNotice = (n: Notice) => setNotice(n);
+  const clearNotice = () => setNotice(null);
+
+  // Map raw errors (network, HTTP, API status strings) to a user-friendly notice.
+  const explainError = (e: unknown, fallbackTitle: string): { title: string; detail: string } => {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/429/.test(msg)) {
+      return { title: 'API利用上限に達しました', detail: '1時間あたりの利用回数を超えています。少し時間を置いてからお試しください。' };
+    }
+    if (/ZERO_RESULTS|NOT_FOUND/i.test(msg)) {
+      return { title: '住所が見つかりませんでした', detail: '番地まで含めて入力されているか確認してください。例: 東京都新宿区新宿1-1-1' };
+    }
+    if (/OVER_QUERY_LIMIT|OVER_DAILY_LIMIT/i.test(msg)) {
+      return { title: 'Maps APIの上限超過', detail: '時間を置いて再度お試しください。' };
+    }
+    if (/Failed to fetch|NetworkError|ERR_NETWORK/i.test(msg)) {
+      return { title: 'ネットワークに接続できません', detail: '電波・Wi-Fiを確認してから再試行してください。' };
+    }
+    return { title: fallbackTitle, detail: msg.slice(0, 200) };
+  };
+
   const promptUpgrade = (reason: string) => setUpgradeReason(reason);
   const upgradeToPro = () => {
     setUserPlan('pro');
@@ -316,7 +344,8 @@ function MainApp() {
       }
     } catch (error) {
       console.error(error);
-      alert("パースに失敗しました");
+      const { title, detail } = explainError(error, 'テキストの読み取りに失敗しました');
+      showNotice({ kind: 'error', title, detail, onRetry: handleParseText });
     } finally {
       setIsParsing(false);
     }
@@ -349,7 +378,8 @@ function MainApp() {
       }
     } catch (error) {
       console.error(error);
-      alert("画像解析に失敗しました");
+      const { title, detail } = explainError(error, '画像の解析に失敗しました');
+      showNotice({ kind: 'error', title, detail });
     } finally {
       setIsParsingImage(false);
     }
@@ -483,7 +513,8 @@ function MainApp() {
       setActivePlanIdx(0);
     } catch (error) {
       console.error(error);
-      alert("計算中にエラーが発生しました。住所を確認してください。");
+      const { title, detail } = explainError(error, 'ルート計算に失敗しました');
+      showNotice({ kind: 'error', title, detail, onRetry: handleOptimize });
     } finally {
       setIsOptimizing(false);
     }
@@ -1001,6 +1032,54 @@ function MainApp() {
            </button>
         </div>
       )}
+
+      {/* Toast / Notice */}
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            key="notice"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md"
+          >
+            <div className={cn(
+              "rounded-xl border p-4 shadow-2xl backdrop-blur-md",
+              notice.kind === 'error' ? 'bg-red-950/90 border-red-500/40' :
+              notice.kind === 'success' ? 'bg-green-950/90 border-green-500/40' :
+              'bg-slate-900/90 border-ui'
+            )}>
+              <div className="flex items-start gap-3">
+                <span className="text-lg leading-none mt-0.5">
+                  {notice.kind === 'error' ? '⚠️' : notice.kind === 'success' ? '✓' : 'ℹ️'}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-bold mb-0.5">{notice.title}</h4>
+                  {notice.detail && (
+                    <p className="text-[11px] text-gray-300 leading-relaxed break-words">{notice.detail}</p>
+                  )}
+                  <div className="flex gap-2 mt-2">
+                    {notice.onRetry && (
+                      <button
+                        onClick={() => { const r = notice.onRetry; clearNotice(); r?.(); }}
+                        className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/20"
+                      >
+                        再試行
+                      </button>
+                    )}
+                    <button
+                      onClick={clearNotice}
+                      className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded hover:bg-white/10 text-gray-400"
+                    >
+                      閉じる
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Upgrade Modal */}
       <AnimatePresence>
