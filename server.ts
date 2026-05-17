@@ -12,6 +12,11 @@ const __dirname = path.dirname(__filename);
 
 // Hard caps to keep per-user API spend predictable.
 const MAX_VISITS_PER_PARSE = 5;
+
+// Pin to a stable, GA model so billing and behavior are predictable.
+// Preview model IDs (e.g. gemini-3-flash-preview) can change pricing or be
+// retired without notice, which is unacceptable for a paid product.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 const QUOTA_WINDOW_MS = 60 * 60 * 1000;        // 1 hour rolling window
 const QUOTA_MAX_REQUESTS_PER_KEY = 30;          // per IP, per window
 const QUOTA_MAX_REQUESTS_GLOBAL_PER_MIN = 120;  // crude global cap
@@ -113,7 +118,7 @@ ${text}
 ]`;
 
       const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -168,7 +173,7 @@ ${text}
 ]`;
 
       const result = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: GEMINI_MODEL,
         contents: [
           {
             role: "user",
