@@ -5,7 +5,11 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  // For GitHub Pages project sites the app lives at /<repo>/ — set the base
+  // via VITE_BASE at build time (the deploy workflow sets it).
+  const base = env.VITE_BASE || '/';
   return {
+    base,
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
