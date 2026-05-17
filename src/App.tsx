@@ -34,7 +34,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo } from './types';
 import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
-import { optimizeRoutes } from './lib/optimization';
+import { optimizeRoutes, computeInputOrderBaseline, Baseline } from './lib/optimization';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
@@ -220,6 +220,7 @@ function MainApp() {
   });
 
   const [plans, setPlans] = useState<RoutePlan[]>([]);
+  const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
   const [activePlanIdx, setActivePlanIdx] = useState(0);
   const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
@@ -422,9 +423,11 @@ function MainApp() {
       }
 
       const matrix = await getDistanceMatrix(points, points);
-      
-      // 3. Optimize
+
+      // 3. Optimize + compute baseline (input order) for savings display
       const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
+      setBaseline(baselineResult);
 
       // 4. Fetch Lunch Spots if requested
       // Consolidate Places API calls: search ONCE per category at the average midpoint
@@ -781,6 +784,48 @@ function MainApp() {
           >
             {/* Sidebar (Route List) */}
             <aside className="w-full lg:w-[380px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl">
+              {/* Savings Banner */}
+              {baseline && plans[activePlanIdx] && (() => {
+                const FUEL_KM_PER_L = 12;
+                const GAS_YEN_PER_L = 180;
+                const planDist = plans[activePlanIdx].totalDistanceKm;
+                const planDur = plans[activePlanIdx].totalDurationMin;
+                const savedKm = Math.max(0, baseline.totalDistanceKm - planDist);
+                const savedMin = Math.max(0, baseline.totalDurationMin - planDur);
+                const savedYen = Math.round((savedKm / FUEL_KM_PER_L) * GAS_YEN_PER_L);
+                const savedPct = baseline.totalDistanceKm > 0
+                  ? Math.round((savedKm / baseline.totalDistanceKm) * 100)
+                  : 0;
+                if (savedKm < 0.1 && savedMin < 1) return null;
+                return (
+                  <div className="border-b border-ui bg-gradient-to-br from-green-950/40 to-emerald-950/20 px-4 py-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-base">✓</span>
+                      <span className="text-[10px] uppercase tracking-wider font-bold text-green-300">入力順巡回比 節約効果</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div>
+                        <div className="text-xl font-bold text-green-300 num-font">−{savedKm.toFixed(1)}</div>
+                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">km短縮</div>
+                      </div>
+                      <div>
+                        <div className="text-xl font-bold text-green-300 num-font">−{savedMin}</div>
+                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">分節約</div>
+                      </div>
+                      <div>
+                        <div className="text-xl font-bold text-green-300 num-font">¥{savedYen.toLocaleString()}</div>
+                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">ガソリン代</div>
+                      </div>
+                    </div>
+                    {savedPct > 0 && (
+                      <p className="text-[10px] text-green-200/60 mt-2 text-center">
+                        距離ベースで <strong className="text-green-300">{savedPct}%</strong> 短縮（燃費12km/L・¥180/L 想定）
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Plan Tabs */}
               <div className="p-4 flex gap-2 border-b border-ui bg-bg/50 backdrop-blur-sm">
                 {plans.map((plan, idx) => (

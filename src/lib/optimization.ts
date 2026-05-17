@@ -12,6 +12,44 @@ function formatTime(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+export type Baseline = {
+  totalDurationMin: number;
+  totalDistanceKm: number;
+};
+
+/**
+ * Baseline = the user's input order, as if they didn't optimize.
+ * Returned alongside the optimized plans so the UI can show "you saved X km / Y min".
+ */
+export function computeInputOrderBaseline(
+  visits: Visit[],
+  settings: Settings,
+  matrix: DistanceMatrixLike
+): Baseline {
+  const visitCount = visits.length;
+  if (visitCount === 0) return { totalDurationMin: 0, totalDistanceKm: 0 };
+
+  let totalDuration = 0;
+  let totalDistance = 0;
+  let prev = 0;
+  for (let i = 1; i <= visitCount; i++) {
+    const el = matrix.rows[prev]?.elements[i];
+    totalDuration += Math.ceil((el?.duration?.value || 0) / 60);
+    totalDistance += (el?.distance?.value || 0) / 1000;
+    prev = i;
+  }
+  let endIdx = prev;
+  if (settings.endLocation === 'home') endIdx = 0;
+  else if (settings.endLocation === 'custom') endIdx = visitCount + 1;
+
+  if (settings.endLocation !== 'none') {
+    const el = matrix.rows[prev]?.elements[endIdx];
+    totalDuration += Math.ceil((el?.duration?.value || 0) / 60);
+    totalDistance += (el?.distance?.value || 0) / 1000;
+  }
+  return { totalDurationMin: totalDuration, totalDistanceKm: totalDistance };
+}
+
 export function optimizeRoutes(
   visits: Visit[],
   settings: Settings,
