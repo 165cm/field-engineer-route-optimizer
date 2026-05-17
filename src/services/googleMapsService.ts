@@ -1,27 +1,45 @@
-import { LunchInfo, Visit } from "../types";
+import { LunchInfo } from "../types";
 
-// Helper to get distances between all points
+// All Google Maps Platform billable calls (Geocoding, Distance Matrix, Places)
+// are routed through our own /api/* proxies. This keeps the high-cost key off
+// the client bundle and lets the server enforce rate limits.
+// The Map JS API key on the client should be a separate, referrer-restricted
+// key with only "Maps JavaScript API" enabled.
+
+type MatrixElement = {
+  duration?: { value: number };
+  distance?: { value: number };
+};
+
+export type DistanceMatrixLike = {
+  rows: { elements: MatrixElement[] }[];
+};
+
+async function postJSON<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`${url} -> ${res.status} ${txt}`);
+  }
+  return res.json() as Promise<T>;
+}
+
 export async function getDistanceMatrix(
   origins: (string | google.maps.LatLngLiteral)[],
   destinations: (string | google.maps.LatLngLiteral)[]
-): Promise<google.maps.DistanceMatrixResponse> {
-  const service = new google.maps.DistanceMatrixService();
-  return new Promise((resolve, reject) => {
-    service.getDistanceMatrix(
-      {
-        origins,
-        destinations,
-        travelMode: google.maps.TravelMode.DRIVING,
-      },
-      (response, status) => {
-        if (status === google.maps.DistanceMatrixStatus.OK && response) {
-          resolve(response);
-        } else {
-          reject(status);
-        }
-      }
-    );
-  });
+): Promise<DistanceMatrixLike> {
+  // The proxy uses a single point list for both origins and destinations,
+  // matching how the caller invokes it (getDistanceMatrix(points, points)).
+  // If origins and destinations diverge in the future, extend the API instead
+  // of duplicating here.
+  if (origins.length !== destinations.length) {
+    throw new Error("origins and destinations must match (server proxy assumes a single point list)");
+  }
+  return postJSON<DistanceMatrixLike>("/api/distance-matrix", { points: origins });
 }
 
 const GEOCODE_CACHE_KEY = 'geocode_cache_v1';
@@ -60,22 +78,20 @@ export async function geocodeAddress(address: string): Promise<google.maps.LatLn
     return hit.coords;
   }
 
-  const geocoder = new google.maps.Geocoder();
-  const coords = await new Promise<google.maps.LatLngLiteral>((resolve, reject) => {
-    geocoder.geocode({ address }, (results, status) => {
-      if (status === google.maps.GeocoderStatus.OK && results?.[0]) {
-        const loc = results[0].geometry.location;
-        resolve({ lat: loc.lat(), lng: loc.lng() });
-      } else {
-        reject(status);
-      }
-    });
-  });
-
+  const coords = await postJSON<google.maps.LatLngLiteral>("/api/geocode", { address });
   cache[key] = { coords, ts: Date.now() };
   writeGeocodeCache(cache);
   return coords;
 }
+
+type PlacesSearchResponse = {
+  places: {
+    displayName: string;
+    formattedAddress: string;
+    rating?: number;
+    location?: google.maps.LatLngLiteral;
+  }[];
+};
 
 export async function findLunchSpots(
   location: google.maps.LatLngLiteral,
@@ -86,30 +102,18 @@ export async function findLunchSpots(
   if (!query) return [];
 
   try {
-    const { Place } = (await google.maps.importLibrary("places")) as any;
-    const response = await Place.searchByText({
+    const data = await postJSON<PlacesSearchResponse>("/api/places/search", {
       textQuery: query,
-      fields: ['displayName', 'location', 'formattedAddress', 'rating'],
-      locationRestriction: {
-        north: location.lat + 0.03,
-        south: location.lat - 0.03,
-        east: location.lng + 0.03,
-        west: location.lng - 0.03,
-      },
-      maxResultCount: limit
+      center: location,
+      maxResultCount: limit,
     });
-
-    if (!response.places || response.places.length === 0) {
-      return [];
-    }
-
-    return response.places.map((place: any) => ({
-      name: place.displayName || '昼食',
-      address: place.formattedAddress || '',
-      rating: place.rating || undefined,
-      location: place.location ? { lat: place.location.lat(), lng: place.location.lng() } : undefined,
+    return (data.places || []).map(p => ({
+      name: p.displayName || '昼食',
+      address: p.formattedAddress || '',
+      rating: p.rating,
+      location: p.location,
       type: query,
-      icon: icon,
+      icon,
     }));
   } catch (error) {
     console.error("Places API Error:", error);

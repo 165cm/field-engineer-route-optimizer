@@ -1,4 +1,5 @@
 import { Visit, RoutePlan, Settings, Leg } from "../types";
+import type { DistanceMatrixLike } from "../services/googleMapsService";
 
 function parseTime(timeStr: string): number {
   const [h, m] = timeStr.split(":").map(Number);
@@ -14,7 +15,7 @@ function formatTime(minutes: number): string {
 export function optimizeRoutes(
   visits: Visit[],
   settings: Settings,
-  matrix: google.maps.DistanceMatrixResponse
+  matrix: DistanceMatrixLike
 ): RoutePlan[] {
   // Start point is always at index 0 in matrix origins
   // Visits are 1 to N

@@ -213,6 +213,126 @@ ${text}
     }
   });
 
+  const MAPS_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || "";
+
+  // ---------------------------------------------------------------------------
+  // Maps REST proxies. Keeping these server-side lets us (a) keep the high-spend
+  // key off the client bundle, (b) apply the rate limiter above, and (c) add
+  // future server-side caching without touching the UI.
+  // The Maps JavaScript API key (used for map rendering on the client) should be
+  // a separate restricted key with only "Maps JavaScript API" enabled +
+  // HTTP-referrer restriction to your domain.
+  // ---------------------------------------------------------------------------
+
+  app.post("/api/geocode", async (req, res) => {
+    try {
+      if (!MAPS_KEY) return res.status(500).json({ error: "Maps key not configured" });
+      const { address } = req.body ?? {};
+      if (typeof address !== "string" || !address.trim()) {
+        return res.status(400).json({ error: "address is required" });
+      }
+      const url = new URL("https://maps.googleapis.com/maps/api/geocode/json");
+      url.searchParams.set("address", address);
+      url.searchParams.set("key", MAPS_KEY);
+      url.searchParams.set("language", "ja");
+      const r = await fetch(url);
+      const data = await r.json() as any;
+      if (data.status !== "OK" || !data.results?.[0]) {
+        return res.status(404).json({ error: data.status || "NOT_FOUND" });
+      }
+      const loc = data.results[0].geometry.location;
+      res.json({ lat: loc.lat, lng: loc.lng });
+    } catch (error) {
+      console.error("Geocode Error:", error);
+      res.status(500).json({ error: "Geocoding failed" });
+    }
+  });
+
+  app.post("/api/distance-matrix", async (req, res) => {
+    try {
+      if (!MAPS_KEY) return res.status(500).json({ error: "Maps key not configured" });
+      const { points } = req.body ?? {};
+      if (!Array.isArray(points) || points.length === 0 || points.length > 12) {
+        return res.status(400).json({ error: "points must be an array of 1..12 entries" });
+      }
+      const encode = (p: any): string => {
+        if (typeof p === "string") return p;
+        if (p && typeof p.lat === "number" && typeof p.lng === "number") return `${p.lat},${p.lng}`;
+        throw new Error("invalid point");
+      };
+      const joined = points.map(encode).join("|");
+      const url = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
+      url.searchParams.set("origins", joined);
+      url.searchParams.set("destinations", joined);
+      url.searchParams.set("mode", "driving");
+      url.searchParams.set("language", "ja");
+      url.searchParams.set("key", MAPS_KEY);
+      const r = await fetch(url);
+      const data = await r.json() as any;
+      if (data.status !== "OK") {
+        return res.status(502).json({ error: data.status || "MATRIX_ERROR" });
+      }
+      // Pass through the rows/elements shape directly — it already matches what
+      // optimization.ts reads (duration.value, distance.value).
+      res.json({ rows: data.rows });
+    } catch (error) {
+      console.error("DistanceMatrix Error:", error);
+      res.status(500).json({ error: "Distance matrix failed" });
+    }
+  });
+
+  app.post("/api/places/search", async (req, res) => {
+    try {
+      if (!MAPS_KEY) return res.status(500).json({ error: "Maps key not configured" });
+      const { textQuery, center, maxResultCount } = req.body ?? {};
+      if (typeof textQuery !== "string" || !textQuery.trim()) {
+        return res.status(400).json({ error: "textQuery is required" });
+      }
+      if (!center || typeof center.lat !== "number" || typeof center.lng !== "number") {
+        return res.status(400).json({ error: "center {lat,lng} is required" });
+      }
+      const limit = Math.max(1, Math.min(10, Number(maxResultCount) || 5));
+      const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": MAPS_KEY,
+          "X-Goog-FieldMask":
+            "places.displayName,places.location,places.formattedAddress,places.rating",
+        },
+        body: JSON.stringify({
+          textQuery,
+          maxResultCount: limit,
+          locationBias: {
+            rectangle: {
+              low: { latitude: center.lat - 0.03, longitude: center.lng - 0.03 },
+              high: { latitude: center.lat + 0.03, longitude: center.lng + 0.03 },
+            },
+          },
+          languageCode: "ja",
+        }),
+      });
+      if (!r.ok) {
+        const txt = await r.text();
+        console.error("Places API non-OK:", r.status, txt);
+        return res.status(502).json({ error: "Places search failed" });
+      }
+      const data = await r.json() as any;
+      const places = (data.places || []).map((p: any) => ({
+        displayName: p.displayName?.text || "",
+        formattedAddress: p.formattedAddress || "",
+        rating: typeof p.rating === "number" ? p.rating : undefined,
+        location: p.location
+          ? { lat: p.location.latitude, lng: p.location.longitude }
+          : undefined,
+      }));
+      res.json({ places });
+    } catch (error) {
+      console.error("Places Search Error:", error);
+      res.status(500).json({ error: "Places search failed" });
+    }
+  });
+
   // Vite integration
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
