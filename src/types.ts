@@ -58,7 +58,6 @@ export type LunchInfo = {
   rating?: number;
   location?: google.maps.LatLngLiteral;
   type: string;
-  hasParkingNear?: boolean;
   icon?: string;
 };
 

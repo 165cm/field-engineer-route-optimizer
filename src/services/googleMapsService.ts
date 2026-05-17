@@ -64,45 +64,14 @@ export async function findLunchSpots(
       return [];
     }
 
-    const results: LunchInfo[] = [];
-
-    // Process places sequentially to not blast rate limits for nearbySearch
-    for (const place of response.places) {
-      const lunchInfo: LunchInfo = {
-        name: place.displayName || '昼食',
-        address: place.formattedAddress || '',
-        rating: place.rating || undefined,
-        location: place.location ? { lat: place.location.lat(), lng: place.location.lng() } : undefined,
-        type: query,
-        icon: icon
-      };
-
-      if (place.location) {
-        try {
-          const parkingResponse = await Place.searchNearby({
-            fields: ['displayName'],
-            locationRestriction: {
-              center: place.location,
-              radius: 150
-            },
-            includedTypes: ['parking']
-          });
-
-          if (parkingResponse.places && parkingResponse.places.length > 0) {
-            lunchInfo.hasParkingNear = true;
-          } else {
-            lunchInfo.hasParkingNear = false;
-          }
-        } catch (parkingErr) {
-          console.warn("Parking search failed:", parkingErr);
-          lunchInfo.hasParkingNear = false;
-        }
-      }
-
-      results.push(lunchInfo);
-    }
-    
-    return results;
+    return response.places.map((place: any) => ({
+      name: place.displayName || '昼食',
+      address: place.formattedAddress || '',
+      rating: place.rating || undefined,
+      location: place.location ? { lat: place.location.lat(), lng: place.location.lng() } : undefined,
+      type: query,
+      icon: icon,
+    }));
   } catch (error) {
     console.error("Places API Error:", error);
     return [];

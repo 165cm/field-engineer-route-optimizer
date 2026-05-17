@@ -355,81 +355,85 @@ function MainApp() {
       const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
 
       // 4. Fetch Lunch Spots if requested
+      // Consolidate Places API calls: search ONCE per category at the average midpoint
+      // across all plans, then share results across plans. This cuts Places API costs
+      // roughly by the number of plans (3x reduction in best case).
       if (updatedSettings.lunchSpotIds && updatedSettings.lunchSpotIds.length > 0) {
         const activeSpots = updatedSettings.savedLunchSpots.filter(s => updatedSettings.lunchSpotIds?.includes(s.id));
-        
-        await Promise.all(optimizedPlans.map(async (plan) => {
-          if (plan.order.length > 0) {
-            // "latter half" -> e.g. after index Math.floor(plan.order.length / 2)
-            const lunchIdx = Math.floor(plan.order.length / 2);
-            const v1 = plan.order[lunchIdx];
-            let v2Coords = v1?.coords;
-            if (lunchIdx + 1 < plan.order.length) {
-              v2Coords = plan.order[lunchIdx + 1].coords;
-            } else if (updatedSettings.endLocation === 'home') {
-              v2Coords = updatedSettings.homeCoords;
-            } else if (updatedSettings.endLocation === 'custom') {
-              v2Coords = updatedSettings.customEndCoords;
-            }
 
-            let midpoint: google.maps.LatLngLiteral;
-            if (v1 && v1.coords && v2Coords) {
-              midpoint = {
-                lat: (v1.coords.lat + v2Coords.lat) / 2,
-                lng: (v1.coords.lng + v2Coords.lng) / 2
-              };
-            } else if (v1 && v1.coords) {
-              midpoint = v1.coords;
-            } else {
-              midpoint = updatedSettings.homeCoords || { lat: 35.6812, lng: 139.7671 };
-            }
+        const computeMidpoint = (plan: RoutePlan): google.maps.LatLngLiteral | null => {
+          if (plan.order.length === 0) return null;
+          const lunchIdx = Math.floor(plan.order.length / 2);
+          const v1 = plan.order[lunchIdx];
+          let v2Coords = v1?.coords;
+          if (lunchIdx + 1 < plan.order.length) {
+            v2Coords = plan.order[lunchIdx + 1].coords;
+          } else if (updatedSettings.endLocation === 'home') {
+            v2Coords = updatedSettings.homeCoords;
+          } else if (updatedSettings.endLocation === 'custom') {
+            v2Coords = updatedSettings.customEndCoords;
+          }
+          if (v1?.coords && v2Coords) {
+            return {
+              lat: (v1.coords.lat + v2Coords.lat) / 2,
+              lng: (v1.coords.lng + v2Coords.lng) / 2,
+            };
+          }
+          if (v1?.coords) return v1.coords;
+          return updatedSettings.homeCoords || null;
+        };
 
-            const candidates: LunchInfo[] = [];
-            const limitPerCategory = Math.max(1, Math.ceil(5 / activeSpots.length));
-            for (const spotPref of activeSpots) {
-              if (spotPref.query) {
-                const infos = await findLunchSpots(midpoint, spotPref.query, limitPerCategory, spotPref.icon);
-                candidates.push(...infos);
-              }
+        // Average all plan midpoints into one shared search point.
+        const planMidpoints = optimizedPlans.map(computeMidpoint).filter((m): m is google.maps.LatLngLiteral => !!m);
+        const sharedMidpoint: google.maps.LatLngLiteral | null = planMidpoints.length > 0
+          ? {
+              lat: planMidpoints.reduce((s, p) => s + p.lat, 0) / planMidpoints.length,
+              lng: planMidpoints.reduce((s, p) => s + p.lng, 0) / planMidpoints.length,
             }
-            if (candidates.length > 0) {
-              plan.lunchCandidates = candidates.slice(0, 5);
-              // Add 60 minutes to total duration
-              plan.totalDurationMin += 60;
-              
-              // Add 60 mins to all subsequent legs and endTime
-              let addedLapse = 60;
-              for (let i = lunchIdx + 1; i < plan.legs.length; i++) {
-                // We need to parse and adjust arrivalTime and endTime for the legs
-                const parseTime = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-                const formatTime = (m: number) => `${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
-                
-                if (plan.legs[i].arrivalTime) {
-                  plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + addedLapse);
-                }
-                if (plan.legs[i].endTime) {
-                  plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + addedLapse);
-                }
-                
-                // Check status violation (basic approximation)
-                if (i - 1 < plan.order.length) {
-                   const visit = plan.order[i - 1];
-                   if (visit && visit.timeWindow) {
-                     const start = parseTime(visit.timeWindow.start);
-                     const end = parseTime(visit.timeWindow.end);
-                     const arr = parseTime(plan.legs[i].arrivalTime);
-                     if (arr > end) plan.legs[i].status = 'violation';
-                     else if (arr > end - 30 || arr < start) plan.legs[i].status = 'warning';
-                   }
-                }
-              }
-              
-              const parseTime = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-              const formatTime = (m: number) => `${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
-              plan.endTime = formatTime(parseTime(plan.endTime) + addedLapse);
+          : null;
+
+        let sharedCandidates: LunchInfo[] = [];
+        if (sharedMidpoint) {
+          const limitPerCategory = Math.max(1, Math.ceil(5 / Math.max(1, activeSpots.length)));
+          for (const spotPref of activeSpots) {
+            if (spotPref.query) {
+              const infos = await findLunchSpots(sharedMidpoint, spotPref.query, limitPerCategory, spotPref.icon);
+              sharedCandidates.push(...infos);
             }
           }
-        }));
+          sharedCandidates = sharedCandidates.slice(0, 5);
+        }
+
+        const parseTime = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+        const formatTime = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+        const LUNCH_MIN = 60;
+
+        for (const plan of optimizedPlans) {
+          if (plan.order.length === 0 || sharedCandidates.length === 0) continue;
+          plan.lunchCandidates = sharedCandidates;
+          plan.totalDurationMin += LUNCH_MIN;
+
+          const lunchIdx = Math.floor(plan.order.length / 2);
+          for (let i = lunchIdx + 1; i < plan.legs.length; i++) {
+            if (plan.legs[i].arrivalTime) {
+              plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + LUNCH_MIN);
+            }
+            if (plan.legs[i].endTime) {
+              plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + LUNCH_MIN);
+            }
+            if (i - 1 < plan.order.length) {
+              const visit = plan.order[i - 1];
+              if (visit?.timeWindow) {
+                const start = parseTime(visit.timeWindow.start);
+                const end = parseTime(visit.timeWindow.end);
+                const arr = parseTime(plan.legs[i].arrivalTime);
+                if (arr > end) plan.legs[i].status = 'violation';
+                else if (arr > end - 30 || arr < start) plan.legs[i].status = 'warning';
+              }
+            }
+          }
+          plan.endTime = formatTime(parseTime(plan.endTime) + LUNCH_MIN);
+        }
       }
 
       setPlans(optimizedPlans);
@@ -803,15 +807,6 @@ function MainApp() {
                                       <h3 className="text-sm font-bold text-orange-100 flex items-center gap-2 flex-wrap">
                                         <span className="text-base shrink-0">{candidate.icon || '🍔'}</span>
                                         <span className="truncate">{candidate.name}</span>
-                                        {candidate.hasParkingNear ? (
-                                            <span className="text-[9px] bg-green-500/20 text-green-300 border border-green-500/30 px-1 py-0.5 rounded leading-none flex items-center gap-0.5 shrink-0">
-                                              <span>🅿️</span> 近隣に駐車場あり
-                                            </span>
-                                        ) : (
-                                            <span className="text-[9px] bg-slate-500/20 text-slate-300 border border-slate-500/30 px-1 py-0.5 rounded leading-none flex items-center gap-0.5 shrink-0">
-                                              <span>🅿️</span> 情報なし
-                                            </span>
-                                        )}
                                         {candidate.rating && (
                                           <span className="text-[10px] text-yellow-500 font-bold flex items-center gap-0.5 shrink-0">
                                             ★ {candidate.rating}
