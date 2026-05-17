@@ -2,7 +2,10 @@ name: Deploy demo to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      # Allow demo previews from working branches without merging first.
+      - 'claude/**'
   workflow_dispatch:
 
 permissions:
