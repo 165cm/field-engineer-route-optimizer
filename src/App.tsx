@@ -221,6 +221,14 @@ function MainApp() {
 
   const [plans, setPlans] = useState<RoutePlan[]>([]);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
+  const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
+  const toggleCompleted = (id: string) => {
+    setCompletedVisitIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
   const [activePlanIdx, setActivePlanIdx] = useState(0);
   const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
@@ -600,12 +608,13 @@ function MainApp() {
       }
 
       setPlans(optimizedPlans);
+      setCompletedVisitIds(new Set());
       setActiveTab('result');
       setActivePlanIdx(0);
     } catch (error) {
       console.error(error);
       const { title, detail } = explainError(error, 'ルート計算に失敗しました');
-      showNotice({ kind: 'error', title, detail, onRetry: handleOptimize });
+      showNotice({ kind: 'error', title, detail, onRetry: () => handleOptimize() });
     } finally {
       setIsOptimizing(false);
     }
@@ -835,30 +844,43 @@ function MainApp() {
               )}
             </div>
 
-            {/* Paste/Voice Input */}
-            <div className="bg-card p-4 rounded-xl border border-ui border-bottom mt-4">
-              <div className="flex items-center justify-between mb-3">
-                 <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
-                   <ClipboardList className="w-4 h-4 text-blue-400" /> テキスト・音声で一括入力
-                 </h3>
-                 <div className="flex gap-1">
-                   <ImageInput onImage={handleParseImage} disabled={isParsingImage} />
-                   <SpeechInput onText={(t) => setInputText(t)} />
-                 </div>
+            {/* AI Input — voice/camera/text */}
+            <div className="bg-card p-4 rounded-xl border border-ui mt-4">
+              <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight mb-3">
+                <ClipboardList className="w-4 h-4 text-blue-400" /> AIで一括入力
+              </h3>
+
+              {/* Prominent CTA row: camera + voice */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <CameraCTA onImage={handleParseImage} disabled={isParsingImage} />
+                <VoiceCTA onText={(t) => setInputText(t)} />
               </div>
-              <textarea 
-                className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-sm mb-3 resize-none h-24 focus:border-blue-500/50"
-                placeholder={isParsingImage ? "AIが画像をスキャンしています..." : "住所を貼り付け、または画像から抽出..."}
-                value={isParsingImage ? "Analyzing image..." : inputText}
-                disabled={isParsingImage}
-                onChange={(e) => setInputText(e.target.value)}
-              />
-              <button 
+
+              <div className="relative">
+                <textarea
+                  className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-sm resize-none h-24 focus:border-blue-500/50"
+                  placeholder={isParsingImage
+                    ? "AIが画像をスキャンしています..."
+                    : "またはメール本文を貼り付け / 音声入力でテキスト化"}
+                  value={isParsingImage ? "Analyzing image..." : inputText}
+                  disabled={isParsingImage}
+                  onChange={(e) => setInputText(e.target.value)}
+                />
+                {isParsing && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 rounded-lg">
+                    <div className="flex items-center gap-2 text-xs text-blue-300">
+                      <div className="w-4 h-4 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
+                      AIで解析中...
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
                 onClick={handleParseText}
                 disabled={isParsing || !inputText.trim()}
-                className="w-full py-3 bg-slate-800 border border-ui rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-slate-700 disabled:opacity-50 transition-colors"
+                className="w-full py-3 mt-3 bg-blue-600/20 border border-blue-500/30 hover:bg-blue-600/30 text-blue-200 rounded-lg text-xs font-bold uppercase tracking-wider disabled:opacity-40 transition-colors"
               >
-                {isParsing ? "読み取り中..." : "リストに追加"}
+                {isParsing ? "読み取り中..." : "テキストから訪問先を抽出"}
               </button>
             </div>
           </motion.div>
@@ -932,21 +954,26 @@ function MainApp() {
 
               {/* Path List */}
               <div className="flex-1 lg:overflow-y-auto p-4 space-y-3 custom-scrollbar lg:min-h-0">
-                {plans[activePlanIdx].legs.map((leg, idx) => (
+                {plans[activePlanIdx].legs.map((leg, idx) => {
+                  const visit = leg.visitId ? plans[activePlanIdx].order[idx] : null;
+                  const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
+                  return (
                   <div key={idx} className="relative">
-                    {leg.visitId ? (
-                      <motion.div 
+                    {leg.visitId && visit ? (
+                      <motion.div
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: idx * 0.05 }}
                         className={cn(
                           "card-bg p-4 rounded-xl border relative overflow-hidden transition-all",
+                          isCompleted ? "border-green-500/40 opacity-60" :
                           leg.status === 'violation' ? "border-red-500/30" : "border-ui"
                         )}
                       >
                         {/* Status bar */}
                         <div className={cn(
                           "absolute left-0 top-0 w-1 h-full",
+                          isCompleted ? "bg-green-500" :
                           leg.status === 'ok' ? "bg-green-500" : leg.status === 'warning' ? "bg-yellow-500" : "bg-red-500"
                         )} />
 
@@ -961,17 +988,31 @@ function MainApp() {
                              )} />
                           </div>
                           <div className="flex gap-1">
-                            <button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(plans[activePlanIdx].order[idx].address)}`, '_blank')} className="p-1 hover:bg-blue-500/10 rounded">
-                              <Navigation className="w-3.5 h-3.5 text-blue-400" />
+                            <button
+                              onClick={() => toggleCompleted(visit.id)}
+                              title={isCompleted ? '完了を取り消す' : '完了にする'}
+                              className={cn(
+                                "p-1.5 rounded transition-colors",
+                                isCompleted ? "bg-green-500/30 text-green-200" : "hover:bg-green-500/10 text-green-400"
+                              )}
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(visit.address)}`, '_blank')}
+                              title="この訪問先にナビ"
+                              className="p-1.5 hover:bg-blue-500/10 rounded"
+                            >
+                              <Navigation className="w-4 h-4 text-blue-400" />
                             </button>
                           </div>
                         </div>
 
-                        <h3 className="text-base font-bold mb-0.5">
-                          {plans[activePlanIdx].order[idx].customerName || "依頼者不明"}
+                        <h3 className={cn("text-base font-bold mb-0.5", isCompleted && "line-through text-secondary")}>
+                          {visit.customerName || "依頼者不明"}
                         </h3>
-                        <p className="text-[10px] text-secondary mb-3 truncate">
-                          {plans[activePlanIdx].order[idx].address}
+                        <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
+                          {visit.address}
                         </p>
 
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -1069,28 +1110,55 @@ function MainApp() {
                        </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Bottom CTA */}
-              <div className="p-4 border-t border-ui glass">
-                <button 
+              <div className="p-4 border-t border-ui glass space-y-3">
+                {plans[activePlanIdx].order.length > 0 && (() => {
+                  const total = plans[activePlanIdx].order.length;
+                  const done = plans[activePlanIdx].order.filter(v => completedVisitIds.has(v.id)).length;
+                  const pct = total > 0 ? (done / total) * 100 : 0;
+                  return (
+                    <div>
+                      <div className="flex justify-between items-baseline mb-1">
+                        <span className="text-[10px] uppercase tracking-wider font-bold text-secondary">本日の進捗</span>
+                        <span className="text-xs font-bold num-font text-white">{done} / {total} 件完了</span>
+                      </div>
+                      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-300"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <button
                   onClick={() => {
                     const plan = plans[activePlanIdx];
-                    let ways = [...plan.order.map(v => v.address)];
+                    // Skip already-completed visits in the external map handoff
+                    const remaining = plan.order.filter(v => !completedVisitIds.has(v.id));
+                    if (remaining.length === 0) {
+                      showNotice({ kind: 'success', title: '本日の訪問はすべて完了しました', detail: 'お疲れさまでした！' });
+                      return;
+                    }
+                    let ways = [...remaining.map(v => v.address)];
                     if (plan.lunchCandidates && plan.lunchCandidates.length > 0) {
                       const selectedIdx = selectedLunchCandidates[activePlanIdx] ?? 0;
-                      ways.splice(Math.floor(plan.order.length / 2) + 1, 0, plan.lunchCandidates[selectedIdx].address);
+                      ways.splice(Math.floor(remaining.length / 2) + 1, 0, plan.lunchCandidates[selectedIdx].address);
                     }
                     const waypoints = ways.map(w => encodeURIComponent(w)).join('/');
-                    const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : plan.order[plan.order.length - 1].address);
+                    const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : remaining[remaining.length - 1].address);
                     window.open(`https://www.google.com/maps/dir/${encodeURIComponent(settings.homeAddress)}/${waypoints}/${encodeURIComponent(dest || '')}`, '_blank');
                   }}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold text-sm shadow-xl shadow-blue-900/30 flex items-center justify-center gap-3 transition-colors"
+                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-extrabold text-sm shadow-xl shadow-blue-900/30 flex items-center justify-center gap-3 transition-colors active:scale-[0.98]"
                 >
-                  <Navigation className="w-5 h-5" /> 全ルートをMAPで開く
+                  <Navigation className="w-5 h-5" /> Google Maps でナビ開始
                 </button>
-                <button onClick={() => setActiveTab('input')} className="w-full mt-3 py-2 text-[10px] text-secondary hover:text-white transition-colors uppercase font-bold tracking-widest">
+                <button onClick={() => setActiveTab('input')} className="w-full py-2 text-[10px] text-secondary hover:text-white transition-colors uppercase font-bold tracking-widest">
                   条件編集に戻る
                 </button>
               </div>
@@ -1601,6 +1669,69 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+function CameraCTA({ onImage, disabled }: { onImage: (base64: string, mime: string) => void, disabled: boolean }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const base64 = (ev.target?.result as string).split(',')[1];
+      onImage(base64, file.type);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+  return (
+    <>
+      <input ref={fileInputRef} type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
+      <button
+        onClick={() => fileInputRef.current?.click()}
+        disabled={disabled}
+        className={cn(
+          "py-3 px-3 rounded-lg flex items-center justify-center gap-2 border transition-all",
+          "bg-blue-500/10 border-blue-500/30 text-blue-200 hover:bg-blue-500/20 disabled:opacity-50",
+          disabled && "animate-pulse"
+        )}
+      >
+        <Camera className="w-5 h-5" />
+        <span className="text-xs font-bold">伝票を撮影</span>
+      </button>
+    </>
+  );
+}
+
+function VoiceCTA({ onText }: { onText: (t: string) => void }) {
+  const [isListening, setIsListening] = useState(false);
+  const start = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("お使いのブラウザは音声入力をサポートしていません");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => onText(event.results[0][0].transcript);
+    recognition.onend = () => setIsListening(false);
+    recognition.start();
+  };
+  return (
+    <button
+      onClick={start}
+      className={cn(
+        "py-3 px-3 rounded-lg flex items-center justify-center gap-2 border transition-all",
+        isListening
+          ? "bg-red-500/20 border-red-500/40 text-red-300 animate-pulse"
+          : "bg-purple-500/10 border-purple-500/30 text-purple-200 hover:bg-purple-500/20"
+      )}
+    >
+      <Mic className="w-5 h-5" />
+      <span className="text-xs font-bold">{isListening ? "聞き取り中" : "音声で入力"}</span>
+    </button>
   );
 }
 
