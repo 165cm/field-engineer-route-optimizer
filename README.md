@@ -1,11 +1,20 @@
-<div align="center">
+# Field Engineer Routing App / ルート最適化アプリ
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+現場作業員（フィールドエンジニア）向けの巡回ルート最適化アプリです。
+複数拠点の訪問ルートをAI（Gemini）とGoogle Maps APIを活用して効率的にスケジュールし、合間に立ち寄れるランチ休憩ポイント（お弁当屋・コンビニ含む）なども自動で提案します。
 
-  <h1>Built with AI Studio</h2>
+## 主な機能
+- **訪問先の自動パース機能:** テキストから訪問先と作業メモをAIが自動抽出して登録します。
+- **ルート最適化:** Google MapsのRoutes APIを使用し、最適な巡回順序と時間を算出します。
+- **作業設定:** 作業内容に合わせたデフォルトの所要時間を設定可能です。
+- **経由地提案:** ランチ休憩やトイレ休憩に向けたコンビニなどの周辺スポットを自動検索してルートに組み込みます。
+- **Google Maps連携:** 作成されたルートをGoogle Maps上で即座に確認可能です。
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## 使い方
+1. ホーム位置や終了位置を設定します（右上の歯車アイコン）。
+2. 作業設定やランチ候補のカスタマイズを行います。
+3. クライアントからのテキスト（メールの本文など）を貼り付けて「AIで読み取る」をクリックします（または手動で「訪問先を追加」）。
+4. 自動でルート最適化が行われ、ランチ候補とあわせてタイムラインが表示されます。
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+---
+[開発者向けドキュメントはこちら (DEVELOPER.md)](./DEVELOPER.md)

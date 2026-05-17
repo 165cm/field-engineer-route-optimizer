@@ -1,0 +1,27 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-bg: #1A1D23;
+  --color-card: #252932;
+  --color-accent: #5B9DF9;
+  --color-secondary: #9CA3AF;
+  --color-success: #4ADE80;
+  --color-warning: #FBBF24;
+  --color-danger: #F87171;
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-[rgba(37,41,50,0.8)] backdrop-blur-[10px];
+  }
+  .border-ui {
+    @apply border-[rgba(255,255,255,0.1)];
+  }
+  .num-font {
+    font-variant-numeric: tabular-nums;
+    @apply font-semibold;
+  }
+}
+

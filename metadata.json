@@ -1,0 +1,6 @@
+{
+  "name": "Field Engineer Route Optimizer",
+  "description": "現場作業員（フィールドエンジニア）向けの巡回ルート最適化アプリ",
+  "requestFramePermissions": ["geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
