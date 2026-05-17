@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
@@ -10,9 +10,68 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Hard caps to keep per-user API spend predictable.
+const MAX_VISITS_PER_PARSE = 5;
+const QUOTA_WINDOW_MS = 60 * 60 * 1000;        // 1 hour rolling window
+const QUOTA_MAX_REQUESTS_PER_KEY = 30;          // per IP, per window
+const QUOTA_MAX_REQUESTS_GLOBAL_PER_MIN = 120;  // crude global cap
+
+type Bucket = { count: number; resetAt: number };
+const ipBuckets = new Map<string, Bucket>();
+const globalBucket: Bucket = { count: 0, resetAt: Date.now() + 60_000 };
+
+function clientKey(req: Request): string {
+  const xff = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
+  return xff || req.ip || req.socket.remoteAddress || "unknown";
+}
+
+function rateLimit(req: Request, res: Response, next: NextFunction): void {
+  const now = Date.now();
+
+  // Global cap (process-wide; protects key + Gemini quota from total floods)
+  if (now > globalBucket.resetAt) {
+    globalBucket.count = 0;
+    globalBucket.resetAt = now + 60_000;
+  }
+  globalBucket.count++;
+  if (globalBucket.count > QUOTA_MAX_REQUESTS_GLOBAL_PER_MIN) {
+    res.status(429).json({ error: "Server is busy. Please try again in a minute." });
+    return;
+  }
+
+  // Per-IP cap
+  const key = clientKey(req);
+  let bucket = ipBuckets.get(key);
+  if (!bucket || now > bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + QUOTA_WINDOW_MS };
+    ipBuckets.set(key, bucket);
+  }
+  bucket.count++;
+  if (bucket.count > QUOTA_MAX_REQUESTS_PER_KEY) {
+    const retryAfterSec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+    res.setHeader("Retry-After", String(retryAfterSec));
+    res.status(429).json({
+      error: `Hourly quota exceeded (${QUOTA_MAX_REQUESTS_PER_KEY} requests/hour). Try again later.`,
+      retryAfterSec,
+    });
+    return;
+  }
+
+  next();
+}
+
+// Periodically prune stale IP buckets to bound memory.
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of ipBuckets) {
+    if (now > b.resetAt) ipBuckets.delete(k);
+  }
+}, QUOTA_WINDOW_MS).unref?.();
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  app.set("trust proxy", true);
 
   app.use(express.json({ limit: '10mb' }));
 
@@ -25,6 +84,8 @@ async function startServer() {
       }
     }
   });
+
+  app.use("/api", rateLimit);
 
   // API Route: Parse visits from text
   app.post("/api/parse-visits", async (req, res) => {
@@ -76,7 +137,8 @@ ${text}
 
       const responseText = result.text;
       const parsed = JSON.parse(responseText || "[]");
-      res.json(parsed);
+      const capped = Array.isArray(parsed) ? parsed.slice(0, MAX_VISITS_PER_PARSE) : parsed;
+      res.json(capped);
     } catch (error) {
       console.error("Gemini Error:", error);
       res.status(500).json({ error: "Failed to parse text" });
@@ -143,7 +205,8 @@ ${text}
 
       const responseText = result.text;
       const parsed = JSON.parse(responseText || "[]");
-      res.json(parsed);
+      const capped = Array.isArray(parsed) ? parsed.slice(0, MAX_VISITS_PER_PARSE) : parsed;
+      res.json(capped);
     } catch (error) {
       console.error("Gemini Vision Error:", error);
       res.status(500).json({ error: "Failed to parse image" });
