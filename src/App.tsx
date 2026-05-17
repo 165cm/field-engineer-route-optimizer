@@ -245,6 +245,34 @@ function MainApp() {
   const showNotice = (n: Notice) => setNotice(n);
   const clearNotice = () => setNotice(null);
 
+  const handleOptimizeFromCurrentLocation = () => {
+    if (userPlan === 'free') {
+      promptUpgrade('現在地起点での再最適化はPro機能です。外出先からの再計画が一発で完了します。');
+      return;
+    }
+    if (!('geolocation' in navigator)) {
+      showNotice({ kind: 'error', title: '位置情報を取得できません', detail: 'お使いの端末では位置情報サービスが利用できません。' });
+      return;
+    }
+    setIsOptimizing(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        handleOptimize({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      },
+      (err) => {
+        setIsOptimizing(false);
+        showNotice({
+          kind: 'error',
+          title: '現在地を取得できませんでした',
+          detail: err.code === err.PERMISSION_DENIED
+            ? '位置情報の利用が許可されていません。ブラウザの権限を確認してください。'
+            : '位置情報の取得に失敗しました。GPS信号の良い場所で再度お試しください。',
+        });
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+  };
+
   // Map raw errors (network, HTTP, API status strings) to a user-friendly notice.
   const explainError = (e: unknown, fallbackTitle: string): { title: string; detail: string } => {
     const msg = e instanceof Error ? e.message : String(e);
@@ -386,13 +414,16 @@ function MainApp() {
     }
   };
 
-  const handleOptimize = async () => {
+  const handleOptimize = async (startOverride?: google.maps.LatLngLiteral) => {
     if (visits.length === 0) return;
     setIsOptimizing(true);
     try {
       // 1. Geocode all addresses (if not cached/done)
       const updatedSettings = { ...settings };
-      if (!updatedSettings.homeCoords) {
+      if (startOverride) {
+        updatedSettings.homeCoords = startOverride;
+        updatedSettings.homeAddress = `現在地 (${startOverride.lat.toFixed(4)}, ${startOverride.lng.toFixed(4)})`;
+      } else if (!updatedSettings.homeCoords) {
         updatedSettings.homeCoords = await geocodeAddress(updatedSettings.homeAddress);
       }
       if (updatedSettings.endLocation === 'custom' && updatedSettings.customEndAddress && !updatedSettings.customEndCoords) {
@@ -1061,20 +1092,36 @@ function MainApp() {
       {/* Floating Action Button */}
       {activeTab === 'input' && (
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#1A1D23] to-transparent z-40">
-           <button 
-             disabled={visits.length === 0 || isOptimizing}
-             onClick={handleOptimize}
-             className="w-full py-4 bg-blue-600 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-xl font-extrabold text-lg flex items-center justify-center gap-3 shadow-xl shadow-blue-900/40 relative active:scale-[0.98] transition-all"
-           >
-             {isOptimizing ? (
-               <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-             ) : (
-               <>
-                 <Navigation className="w-6 h-6" />
-                 ルートを計算
-               </>
-             )}
-           </button>
+          <div className="flex gap-2">
+            <button
+              disabled={visits.length === 0 || isOptimizing}
+              onClick={() => handleOptimize()}
+              className="flex-[2] py-4 bg-blue-600 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-xl font-extrabold text-lg flex items-center justify-center gap-3 shadow-xl shadow-blue-900/40 active:scale-[0.98] transition-all"
+            >
+              {isOptimizing ? (
+                <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>
+                  <Navigation className="w-6 h-6" />
+                  ルートを計算
+                </>
+              )}
+            </button>
+            <button
+              disabled={visits.length === 0 || isOptimizing}
+              onClick={handleOptimizeFromCurrentLocation}
+              className={cn(
+                "flex-1 py-4 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-[0.98] transition-all border",
+                userPlan === 'pro'
+                  ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-400/40 text-white shadow-xl shadow-emerald-900/40"
+                  : "bg-slate-800 border-amber-500/30 text-amber-300 hover:bg-slate-700"
+              )}
+              title={userPlan === 'pro' ? '現在地から再最適化' : 'Pro機能: 現在地から再最適化'}
+            >
+              <MapPin className="w-5 h-5" />
+              <span>{userPlan === 'pro' ? '現在地から' : '現在地 ⚡Pro'}</span>
+            </button>
+          </div>
         </div>
       )}
 
