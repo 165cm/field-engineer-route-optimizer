@@ -250,7 +250,16 @@ function MainApp() {
   };
 
   const handleUpdateVisit = (id: string, updates: Partial<Visit>) => {
-    setVisits(visits.map(v => v.id === id ? { ...v, ...updates } : v));
+    setVisits(visits.map(v => {
+      if (v.id !== id) return v;
+      const next = { ...v, ...updates };
+      // Invalidate cached coords when the address changes so the next
+      // optimization re-geocodes (via the address-keyed cache, this stays cheap).
+      if (updates.address !== undefined && updates.address !== v.address) {
+        next.coords = undefined;
+      }
+      return next;
+    }));
   };
 
   const handleDeleteVisit = (id: string) => {
@@ -331,12 +340,16 @@ function MainApp() {
       }
       setSettings(updatedSettings);
 
+      // Reuse cached coords as long as the address hasn't changed.
+      // geocodeAddress also has its own localStorage TTL cache,
+      // so repeated optimizations on the same set incur zero network cost.
       const updatedVisits = await Promise.all(visits.map(async v => {
-        if (!v.coords || v.address !== v.coords.lat.toString()) { // Simple dirty check
-           const coords = await geocodeAddress(v.address);
-           return { ...v, coords };
+        if (v.coords && v.address) {
+          return v;
         }
-        return v;
+        if (!v.address) return v;
+        const coords = await geocodeAddress(v.address);
+        return { ...v, coords };
       }));
       setVisits(updatedVisits);
 

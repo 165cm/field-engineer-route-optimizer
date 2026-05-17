@@ -24,9 +24,44 @@ export async function getDistanceMatrix(
   });
 }
 
+const GEOCODE_CACHE_KEY = 'geocode_cache_v1';
+const GEOCODE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+type GeocodeCacheEntry = { coords: google.maps.LatLngLiteral; ts: number };
+
+function readGeocodeCache(): Record<string, GeocodeCacheEntry> {
+  try {
+    const raw = localStorage.getItem(GEOCODE_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeGeocodeCache(cache: Record<string, GeocodeCacheEntry>): void {
+  try {
+    localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // quota exceeded or unavailable — silently ignore
+  }
+}
+
+function normalizeAddress(address: string): string {
+  return address.trim().replace(/\s+/g, ' ');
+}
+
 export async function geocodeAddress(address: string): Promise<google.maps.LatLngLiteral> {
+  const key = normalizeAddress(address);
+  if (!key) throw new Error('empty address');
+
+  const cache = readGeocodeCache();
+  const hit = cache[key];
+  if (hit && Date.now() - hit.ts < GEOCODE_CACHE_TTL_MS) {
+    return hit.coords;
+  }
+
   const geocoder = new google.maps.Geocoder();
-  return new Promise((resolve, reject) => {
+  const coords = await new Promise<google.maps.LatLngLiteral>((resolve, reject) => {
     geocoder.geocode({ address }, (results, status) => {
       if (status === google.maps.GeocoderStatus.OK && results?.[0]) {
         const loc = results[0].geometry.location;
@@ -36,6 +71,10 @@ export async function geocodeAddress(address: string): Promise<google.maps.LatLn
       }
     });
   });
+
+  cache[key] = { coords, ts: Date.now() };
+  writeGeocodeCache(cache);
+  return coords;
 }
 
 export async function findLunchSpots(
