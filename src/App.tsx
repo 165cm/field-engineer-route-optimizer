@@ -34,7 +34,11 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo } from './types';
 import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
-import { optimizeRoutes } from './lib/optimization';
+import { optimizeRoutes, computeInputOrderBaseline, Baseline } from './lib/optimization';
+import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
+import { isDemoMode } from './lib/demoMode';
+import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
+import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -219,6 +223,15 @@ function MainApp() {
   });
 
   const [plans, setPlans] = useState<RoutePlan[]>([]);
+  const [baseline, setBaseline] = useState<Baseline | null>(null);
+  const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
+  const toggleCompleted = (id: string) => {
+    setCompletedVisitIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
   const [activePlanIdx, setActivePlanIdx] = useState(0);
   const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
@@ -229,6 +242,139 @@ function MainApp() {
   const [isParsing, setIsParsing] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
 
+  const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
+  const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
+  const [showAIUnlock, setShowAIUnlock] = useState(false);
+  const [aiUnlocked, setAIUnlocked] = useState<boolean>(() => isAIUnlocked());
+  const [aiUsage, setAIUsage] = useState(() => getDailyUsage());
+  const refreshAIUsage = () => setAIUsage(getDailyUsage());
+  const pendingAIActionRef = useRef<(() => void) | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
+    try {
+      return !localStorage.getItem('repair_onboarded_v1');
+    } catch {
+      return false;
+    }
+  });
+  const dismissOnboarding = () => {
+    try { localStorage.setItem('repair_onboarded_v1', '1'); } catch {}
+    setShowOnboarding(false);
+  };
+  const visitLimit = getVisitLimit(userPlan);
+
+  type Notice = {
+    kind: 'error' | 'info' | 'success';
+    title: string;
+    detail?: string;
+    onRetry?: () => void;
+  };
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const showNotice = (n: Notice) => setNotice(n);
+  const clearNotice = () => setNotice(null);
+
+  const handleLoadSampleAndOptimize = () => {
+    const sample: Visit[] = [
+      { id: 's1', address: '東京都新宿区西新宿2-8-1', customerName: '田中様', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
+      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', customerName: '佐藤様', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
+      { id: 's3', address: '東京都港区六本木6-10-1', customerName: '鈴木様', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
+    ];
+    setVisits(sample);
+    dismissOnboarding();
+    // Run after the state settles so handleOptimize sees the new visits.
+    setTimeout(() => {
+      // handleOptimize closes over `visits` — call it via a fresh closure
+      // by triggering through a microtask + state-driven approach.
+      // Simpler: replicate handleOptimize but pass the sample directly.
+      runOptimizeFor(sample);
+    }, 0);
+  };
+
+  const runOptimizeFor = async (sampleVisits: Visit[]) => {
+    setIsOptimizing(true);
+    try {
+      const updatedSettings = { ...settings };
+      if (!updatedSettings.homeCoords) {
+        updatedSettings.homeCoords = await geocodeAddress(updatedSettings.homeAddress);
+      }
+      const updatedVisits = await Promise.all(sampleVisits.map(async v => {
+        if (v.coords) return v;
+        const coords = await geocodeAddress(v.address);
+        return { ...v, coords };
+      }));
+      setVisits(updatedVisits);
+      setSettings(updatedSettings);
+      const points = [updatedSettings.homeCoords || updatedSettings.homeAddress, ...updatedVisits.map(v => v.coords || v.address)];
+      const matrix = await getDistanceMatrix(points, points);
+      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      setBaseline(computeInputOrderBaseline(updatedVisits, updatedSettings, matrix));
+      setPlans(optimizedPlans);
+      setActiveTab('result');
+      setActivePlanIdx(0);
+    } catch (error) {
+      const { title, detail } = explainError(error, 'サンプルの計算に失敗しました');
+      showNotice({ kind: 'error', title, detail });
+    } finally {
+      setIsOptimizing(false);
+    }
+  };
+
+  const handleOptimizeFromCurrentLocation = () => {
+    if (userPlan === 'free') {
+      promptUpgrade('現在地起点での再最適化はPro機能です。外出先からの再計画が一発で完了します。');
+      return;
+    }
+    if (!('geolocation' in navigator)) {
+      showNotice({ kind: 'error', title: '位置情報を取得できません', detail: 'お使いの端末では位置情報サービスが利用できません。' });
+      return;
+    }
+    setIsOptimizing(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        handleOptimize({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+      },
+      (err) => {
+        setIsOptimizing(false);
+        showNotice({
+          kind: 'error',
+          title: '現在地を取得できませんでした',
+          detail: err.code === err.PERMISSION_DENIED
+            ? '位置情報の利用が許可されていません。ブラウザの権限を確認してください。'
+            : '位置情報の取得に失敗しました。GPS信号の良い場所で再度お試しください。',
+        });
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+  };
+
+  // Map raw errors (network, HTTP, API status strings) to a user-friendly notice.
+  const explainError = (e: unknown, fallbackTitle: string): { title: string; detail: string } => {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/429/.test(msg)) {
+      return { title: 'API利用上限に達しました', detail: '1時間あたりの利用回数を超えています。少し時間を置いてからお試しください。' };
+    }
+    if (/ZERO_RESULTS|NOT_FOUND/i.test(msg)) {
+      return { title: '住所が見つかりませんでした', detail: '番地まで含めて入力されているか確認してください。例: 東京都新宿区新宿1-1-1' };
+    }
+    if (/OVER_QUERY_LIMIT|OVER_DAILY_LIMIT/i.test(msg)) {
+      return { title: 'Maps APIの上限超過', detail: '時間を置いて再度お試しください。' };
+    }
+    if (/Failed to fetch|NetworkError|ERR_NETWORK/i.test(msg)) {
+      return { title: 'ネットワークに接続できません', detail: '電波・Wi-Fiを確認してから再試行してください。' };
+    }
+    return { title: fallbackTitle, detail: msg.slice(0, 200) };
+  };
+
+  const promptUpgrade = (reason: string) => setUpgradeReason(reason);
+  const upgradeToPro = () => {
+    setUserPlan('pro');
+    setUserPlanState('pro');
+    setUpgradeReason(null);
+  };
+  const downgradeToFree = () => {
+    setUserPlan('free');
+    setUserPlanState('free');
+  };
+
   useEffect(() => {
     localStorage.setItem('repair_settings', JSON.stringify(settings));
   }, [settings]);
@@ -238,7 +384,12 @@ function MainApp() {
   }, [visits]);
 
   const handleAddVisit = () => {
-    if (visits.length >= 5) return;
+    if (visits.length >= visitLimit) {
+      if (userPlan === 'free') {
+        promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+      }
+      return;
+    }
     const newVisit: Visit = {
       id: Math.random().toString(36).substr(2, 9),
       address: '',
@@ -250,80 +401,135 @@ function MainApp() {
   };
 
   const handleUpdateVisit = (id: string, updates: Partial<Visit>) => {
-    setVisits(visits.map(v => v.id === id ? { ...v, ...updates } : v));
+    setVisits(visits.map(v => {
+      if (v.id !== id) return v;
+      const next = { ...v, ...updates };
+      // Invalidate cached coords when the address changes so the next
+      // optimization re-geocodes (via the address-keyed cache, this stays cheap).
+      if (updates.address !== undefined && updates.address !== v.address) {
+        next.coords = undefined;
+      }
+      return next;
+    }));
   };
 
   const handleDeleteVisit = (id: string) => {
     setVisits(visits.filter(v => v.id !== id));
   };
 
+  const applyParsedVisits = (data: any[], sourceLabel: 'text' | 'image') => {
+    const newVisits = data.map((v: any) => ({
+      id: Math.random().toString(36).substr(2, 9),
+      address: v.address,
+      customerName: v.customerName,
+      memo: v.memo,
+      workMinutes: 60,
+      difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
+      timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined,
+    }));
+    const merged = [...visits, ...newVisits];
+    if (userPlan === 'free' && merged.length > visitLimit) {
+      const overflow = newVisits.length - (visitLimit - visits.length);
+      const verb = sourceLabel === 'image' ? '画像から' : '読み取った';
+      promptUpgrade(`${verb}${newVisits.length}件のうち${overflow}件が無料枠を超えました。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+    }
+    setVisits(merged.slice(0, visitLimit));
+  };
+
+  const requireAIAccess = (retry: () => void): boolean => {
+    if (!isDemoMode()) return true;
+    if (!aiUnlocked) {
+      pendingAIActionRef.current = retry;
+      setShowAIUnlock(true);
+      return false;
+    }
+    if (getDailyUsage().remaining <= 0) {
+      showNotice({
+        kind: 'info',
+        title: '本日のAI解析の上限に達しました',
+        detail: 'デモ版は1日10回までご利用いただけます。明日0時にリセットされます。',
+      });
+      return false;
+    }
+    return true;
+  };
+
   const handleParseText = async () => {
     if (!inputText.trim()) return;
+    if (!requireAIAccess(handleParseText)) return;
     setIsParsing(true);
     try {
-      const response = await fetch("/api/parse-visits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: inputText }),
-      });
-      const data = await response.json();
-      if (Array.isArray(data)) {
-        const newVisits = data.map((v: any) => ({
-          id: Math.random().toString(36).substr(2, 9),
-          address: v.address,
-          customerName: v.customerName,
-          memo: v.memo,
-          workMinutes: 60,
-          difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
-          timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined
-        }));
-        setVisits([...visits, ...newVisits].slice(0, 5));
+      let data: any[];
+      if (isDemoMode()) {
+        data = await parseVisitsFromTextClient(inputText);
+        consumeAIRequest();
+        refreshAIUsage();
+      } else {
+        const response = await fetch("/api/parse-visits", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: inputText }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json();
+      }
+      if (Array.isArray(data) && data.length > 0) {
+        applyParsedVisits(data, 'text');
         setInputText('');
+      } else {
+        showNotice({ kind: 'info', title: 'テキストから訪問先を抽出できませんでした', detail: '住所が含まれているかご確認ください。' });
       }
     } catch (error) {
       console.error(error);
-      alert("パースに失敗しました");
+      const { title, detail } = explainError(error, 'テキストの読み取りに失敗しました');
+      showNotice({ kind: 'error', title, detail, onRetry: handleParseText });
     } finally {
       setIsParsing(false);
     }
   };
 
   const handleParseImage = async (base64: string, mimeType: string) => {
+    if (!requireAIAccess(() => handleParseImage(base64, mimeType))) return;
     setIsParsingImage(true);
     try {
-      const response = await fetch("/api/parse-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: base64, mimeType }),
-      });
-      const data = await response.json();
-      if (Array.isArray(data)) {
-        const newVisits = data.map((v: any) => ({
-          id: Math.random().toString(36).substr(2, 9),
-          address: v.address,
-          customerName: v.customerName,
-          memo: v.memo,
-          workMinutes: 60,
-          difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
-          timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined
-        }));
-        setVisits([...visits, ...newVisits].slice(0, 5));
+      let data: any[];
+      if (isDemoMode()) {
+        data = await parseVisitsFromImageClient(base64, mimeType);
+        consumeAIRequest();
+        refreshAIUsage();
+      } else {
+        const response = await fetch("/api/parse-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base64, mimeType }),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json();
+      }
+      if (Array.isArray(data) && data.length > 0) {
+        applyParsedVisits(data, 'image');
+      } else {
+        showNotice({ kind: 'info', title: '画像から訪問先を抽出できませんでした', detail: '別の角度で撮影、または明るい場所で撮り直してみてください。' });
       }
     } catch (error) {
       console.error(error);
-      alert("画像解析に失敗しました");
+      const { title, detail } = explainError(error, '画像の解析に失敗しました');
+      showNotice({ kind: 'error', title, detail });
     } finally {
       setIsParsingImage(false);
     }
   };
 
-  const handleOptimize = async () => {
+  const handleOptimize = async (startOverride?: google.maps.LatLngLiteral) => {
     if (visits.length === 0) return;
     setIsOptimizing(true);
     try {
       // 1. Geocode all addresses (if not cached/done)
       const updatedSettings = { ...settings };
-      if (!updatedSettings.homeCoords) {
+      if (startOverride) {
+        updatedSettings.homeCoords = startOverride;
+        updatedSettings.homeAddress = `現在地 (${startOverride.lat.toFixed(4)}, ${startOverride.lng.toFixed(4)})`;
+      } else if (!updatedSettings.homeCoords) {
         updatedSettings.homeCoords = await geocodeAddress(updatedSettings.homeAddress);
       }
       if (updatedSettings.endLocation === 'custom' && updatedSettings.customEndAddress && !updatedSettings.customEndCoords) {
@@ -331,12 +537,16 @@ function MainApp() {
       }
       setSettings(updatedSettings);
 
+      // Reuse cached coords as long as the address hasn't changed.
+      // geocodeAddress also has its own localStorage TTL cache,
+      // so repeated optimizations on the same set incur zero network cost.
       const updatedVisits = await Promise.all(visits.map(async v => {
-        if (!v.coords || v.address !== v.coords.lat.toString()) { // Simple dirty check
-           const coords = await geocodeAddress(v.address);
-           return { ...v, coords };
+        if (v.coords && v.address) {
+          return v;
         }
-        return v;
+        if (!v.address) return v;
+        const coords = await geocodeAddress(v.address);
+        return { ...v, coords };
       }));
       setVisits(updatedVisits);
 
@@ -350,94 +560,102 @@ function MainApp() {
       }
 
       const matrix = await getDistanceMatrix(points, points);
-      
-      // 3. Optimize
+
+      // 3. Optimize + compute baseline (input order) for savings display
       const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
+      setBaseline(baselineResult);
 
       // 4. Fetch Lunch Spots if requested
+      // Consolidate Places API calls: search ONCE per category at the average midpoint
+      // across all plans, then share results across plans. This cuts Places API costs
+      // roughly by the number of plans (3x reduction in best case).
       if (updatedSettings.lunchSpotIds && updatedSettings.lunchSpotIds.length > 0) {
         const activeSpots = updatedSettings.savedLunchSpots.filter(s => updatedSettings.lunchSpotIds?.includes(s.id));
-        
-        await Promise.all(optimizedPlans.map(async (plan) => {
-          if (plan.order.length > 0) {
-            // "latter half" -> e.g. after index Math.floor(plan.order.length / 2)
-            const lunchIdx = Math.floor(plan.order.length / 2);
-            const v1 = plan.order[lunchIdx];
-            let v2Coords = v1?.coords;
-            if (lunchIdx + 1 < plan.order.length) {
-              v2Coords = plan.order[lunchIdx + 1].coords;
-            } else if (updatedSettings.endLocation === 'home') {
-              v2Coords = updatedSettings.homeCoords;
-            } else if (updatedSettings.endLocation === 'custom') {
-              v2Coords = updatedSettings.customEndCoords;
-            }
 
-            let midpoint: google.maps.LatLngLiteral;
-            if (v1 && v1.coords && v2Coords) {
-              midpoint = {
-                lat: (v1.coords.lat + v2Coords.lat) / 2,
-                lng: (v1.coords.lng + v2Coords.lng) / 2
-              };
-            } else if (v1 && v1.coords) {
-              midpoint = v1.coords;
-            } else {
-              midpoint = updatedSettings.homeCoords || { lat: 35.6812, lng: 139.7671 };
-            }
+        const computeMidpoint = (plan: RoutePlan): google.maps.LatLngLiteral | null => {
+          if (plan.order.length === 0) return null;
+          const lunchIdx = Math.floor(plan.order.length / 2);
+          const v1 = plan.order[lunchIdx];
+          let v2Coords = v1?.coords;
+          if (lunchIdx + 1 < plan.order.length) {
+            v2Coords = plan.order[lunchIdx + 1].coords;
+          } else if (updatedSettings.endLocation === 'home') {
+            v2Coords = updatedSettings.homeCoords;
+          } else if (updatedSettings.endLocation === 'custom') {
+            v2Coords = updatedSettings.customEndCoords;
+          }
+          if (v1?.coords && v2Coords) {
+            return {
+              lat: (v1.coords.lat + v2Coords.lat) / 2,
+              lng: (v1.coords.lng + v2Coords.lng) / 2,
+            };
+          }
+          if (v1?.coords) return v1.coords;
+          return updatedSettings.homeCoords || null;
+        };
 
-            const candidates: LunchInfo[] = [];
-            const limitPerCategory = Math.max(1, Math.ceil(5 / activeSpots.length));
-            for (const spotPref of activeSpots) {
-              if (spotPref.query) {
-                const infos = await findLunchSpots(midpoint, spotPref.query, limitPerCategory, spotPref.icon);
-                candidates.push(...infos);
-              }
+        // Average all plan midpoints into one shared search point.
+        const planMidpoints = optimizedPlans.map(computeMidpoint).filter((m): m is google.maps.LatLngLiteral => !!m);
+        const sharedMidpoint: google.maps.LatLngLiteral | null = planMidpoints.length > 0
+          ? {
+              lat: planMidpoints.reduce((s, p) => s + p.lat, 0) / planMidpoints.length,
+              lng: planMidpoints.reduce((s, p) => s + p.lng, 0) / planMidpoints.length,
             }
-            if (candidates.length > 0) {
-              plan.lunchCandidates = candidates.slice(0, 5);
-              // Add 60 minutes to total duration
-              plan.totalDurationMin += 60;
-              
-              // Add 60 mins to all subsequent legs and endTime
-              let addedLapse = 60;
-              for (let i = lunchIdx + 1; i < plan.legs.length; i++) {
-                // We need to parse and adjust arrivalTime and endTime for the legs
-                const parseTime = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-                const formatTime = (m: number) => `${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
-                
-                if (plan.legs[i].arrivalTime) {
-                  plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + addedLapse);
-                }
-                if (plan.legs[i].endTime) {
-                  plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + addedLapse);
-                }
-                
-                // Check status violation (basic approximation)
-                if (i - 1 < plan.order.length) {
-                   const visit = plan.order[i - 1];
-                   if (visit && visit.timeWindow) {
-                     const start = parseTime(visit.timeWindow.start);
-                     const end = parseTime(visit.timeWindow.end);
-                     const arr = parseTime(plan.legs[i].arrivalTime);
-                     if (arr > end) plan.legs[i].status = 'violation';
-                     else if (arr > end - 30 || arr < start) plan.legs[i].status = 'warning';
-                   }
-                }
-              }
-              
-              const parseTime = (t: string) => { const [h,m] = t.split(':').map(Number); return h*60+m; };
-              const formatTime = (m: number) => `${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
-              plan.endTime = formatTime(parseTime(plan.endTime) + addedLapse);
+          : null;
+
+        let sharedCandidates: LunchInfo[] = [];
+        if (sharedMidpoint) {
+          const limitPerCategory = Math.max(1, Math.ceil(5 / Math.max(1, activeSpots.length)));
+          for (const spotPref of activeSpots) {
+            if (spotPref.query) {
+              const infos = await findLunchSpots(sharedMidpoint, spotPref.query, limitPerCategory, spotPref.icon);
+              sharedCandidates.push(...infos);
             }
           }
-        }));
+          sharedCandidates = sharedCandidates.slice(0, 5);
+        }
+
+        const parseTime = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+        const formatTime = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+        const LUNCH_MIN = 60;
+
+        for (const plan of optimizedPlans) {
+          if (plan.order.length === 0 || sharedCandidates.length === 0) continue;
+          plan.lunchCandidates = sharedCandidates;
+          plan.totalDurationMin += LUNCH_MIN;
+
+          const lunchIdx = Math.floor(plan.order.length / 2);
+          for (let i = lunchIdx + 1; i < plan.legs.length; i++) {
+            if (plan.legs[i].arrivalTime) {
+              plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + LUNCH_MIN);
+            }
+            if (plan.legs[i].endTime) {
+              plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + LUNCH_MIN);
+            }
+            if (i - 1 < plan.order.length) {
+              const visit = plan.order[i - 1];
+              if (visit?.timeWindow) {
+                const start = parseTime(visit.timeWindow.start);
+                const end = parseTime(visit.timeWindow.end);
+                const arr = parseTime(plan.legs[i].arrivalTime);
+                if (arr > end) plan.legs[i].status = 'violation';
+                else if (arr > end - 30 || arr < start) plan.legs[i].status = 'warning';
+              }
+            }
+          }
+          plan.endTime = formatTime(parseTime(plan.endTime) + LUNCH_MIN);
+        }
       }
 
       setPlans(optimizedPlans);
+      setCompletedVisitIds(new Set());
       setActiveTab('result');
       setActivePlanIdx(0);
     } catch (error) {
       console.error(error);
-      alert("計算中にエラーが発生しました。住所を確認してください。");
+      const { title, detail } = explainError(error, 'ルート計算に失敗しました');
+      showNotice({ kind: 'error', title, detail, onRetry: () => handleOptimize() });
     } finally {
       setIsOptimizing(false);
     }
@@ -445,6 +663,13 @@ function MainApp() {
 
   return (
     <div className="bg-bg text-gray-200 min-h-screen font-sans border-ui overflow-x-hidden pb-20">
+      {/* Demo banner */}
+      {isDemoMode() && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-[11px] py-1.5 px-4 text-center">
+          <span className="font-bold">DEMO</span> · プレビュー版 · AI解析はパスワード制（1日10回）
+        </div>
+      )}
+
       {/* Header */}
       <nav className="sticky top-0 z-40 h-16 border-b border-ui flex items-center justify-between px-6 bg-slate-900/50 backdrop-blur-md">
         <div>
@@ -453,12 +678,51 @@ function MainApp() {
             ルート最適化 <span className="text-xs font-normal text-slate-400">v1.2</span>
           </h1>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
            {activeTab === 'result' && (
              <div className="hidden sm:flex flex-col items-end text-xs mr-2">
                 <span className="text-secondary">起点</span>
                 <span className="font-medium truncate max-w-[150px]">{settings.homeAddress}</span>
              </div>
+           )}
+           {isDemoMode() ? (
+             // Demo build: simple two-state toggle so reviewers can flip
+             // between Free / Pro without the upsell modal in the way.
+             <div className="flex items-center gap-2">
+               <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold hidden sm:inline">Plan</span>
+               <button
+                 onClick={() => (userPlan === 'pro' ? downgradeToFree() : upgradeToPro())}
+                 className={cn(
+                   "relative inline-flex items-center h-6 w-[88px] rounded-full border transition-colors",
+                   userPlan === 'pro'
+                     ? "bg-amber-500/20 border-amber-500/40"
+                     : "bg-slate-800 border-ui"
+                 )}
+                 title="クリックで Free / Pro を切り替え (デモ用)"
+               >
+                 <span className={cn(
+                   "absolute text-[10px] font-bold uppercase tracking-wider transition-all",
+                   userPlan === 'pro' ? "left-2 text-amber-300" : "left-2 text-slate-500"
+                 )}>
+                   {userPlan === 'pro' ? 'Pro' : 'Free'}
+                 </span>
+                 <span className={cn(
+                   "absolute w-5 h-5 rounded-full bg-white/90 shadow-md transition-transform",
+                   userPlan === 'pro' ? "translate-x-[60px]" : "translate-x-0.5"
+                 )} />
+               </button>
+             </div>
+           ) : userPlan === 'pro' ? (
+             <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+               Pro
+             </span>
+           ) : (
+             <button
+               onClick={() => promptUpgrade('Proにアップグレードすると、最大15件の訪問・GPS現在地起点・月次レポートが使えます。')}
+               className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded bg-slate-800 text-blue-300 border border-blue-500/30 hover:bg-blue-500/10"
+             >
+               Free · アップグレード
+             </button>
            )}
         </div>
       </nav>
@@ -578,14 +842,29 @@ function MainApp() {
                 </div>
               ))}
 
-              {visits.length < 5 && (
-                <button 
+              {visits.length < visitLimit ? (
+                <button
                   onClick={handleAddVisit}
                   className="w-full py-6 border border-dashed border-ui rounded-xl flex flex-col items-center justify-center text-secondary hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
                 >
                   <Plus className="w-6 h-6 mb-1 text-blue-500" />
-                  <span className="text-xs font-bold uppercase tracking-widest">訪問先を追加</span>
+                  <span className="text-xs font-bold uppercase tracking-widest">
+                    訪問先を追加 ({visits.length}/{visitLimit})
+                  </span>
                 </button>
+              ) : userPlan === 'free' ? (
+                <button
+                  onClick={() => promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`)}
+                  className="w-full py-6 border border-dashed border-amber-500/40 bg-amber-500/5 rounded-xl flex flex-col items-center justify-center text-amber-300 hover:bg-amber-500/10 transition-all"
+                >
+                  <span className="text-base mb-1">⚡</span>
+                  <span className="text-xs font-bold uppercase tracking-widest">Proで{getVisitLimit('pro')}件まで解放</span>
+                  <span className="text-[10px] mt-1 text-amber-300/70">月額¥780</span>
+                </button>
+              ) : (
+                <div className="w-full py-4 text-center text-xs text-secondary">
+                  上限 {visitLimit}件に到達しました
+                </div>
               )}
             </div>
 
@@ -636,30 +915,68 @@ function MainApp() {
               )}
             </div>
 
-            {/* Paste/Voice Input */}
-            <div className="bg-card p-4 rounded-xl border border-ui border-bottom mt-4">
-              <div className="flex items-center justify-between mb-3">
-                 <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
-                   <ClipboardList className="w-4 h-4 text-blue-400" /> テキスト・音声で一括入力
-                 </h3>
-                 <div className="flex gap-1">
-                   <ImageInput onImage={handleParseImage} disabled={isParsingImage} />
-                   <SpeechInput onText={(t) => setInputText(t)} />
-                 </div>
+            {/* AI Input — voice/camera/text */}
+            <div className="bg-card p-4 rounded-xl border border-ui mt-4">
+              <div className="flex items-center justify-between mb-3 gap-2">
+                <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
+                  <ClipboardList className="w-4 h-4 text-blue-400" /> AIで一括入力
+                </h3>
+                {isDemoMode() && (
+                  aiUnlocked ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-bold text-green-300 bg-green-500/10 border border-green-500/30 px-2 py-0.5 rounded">
+                        今日: {aiUsage.used}/{aiUsage.limit}
+                      </span>
+                      <button
+                        onClick={() => { lockAI(); setAIUnlocked(false); }}
+                        title="AIアクセスをロック"
+                        className="text-[10px] text-slate-500 hover:text-slate-300"
+                      >
+                        🔒
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowAIUnlock(true)}
+                      className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 hover:bg-amber-500/25"
+                    >
+                      🔒 パスワード解除
+                    </button>
+                  )
+                )}
               </div>
-              <textarea 
-                className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-sm mb-3 resize-none h-24 focus:border-blue-500/50"
-                placeholder={isParsingImage ? "AIが画像をスキャンしています..." : "住所を貼り付け、または画像から抽出..."}
-                value={isParsingImage ? "Analyzing image..." : inputText}
-                disabled={isParsingImage}
-                onChange={(e) => setInputText(e.target.value)}
-              />
-              <button 
+
+              {/* Prominent CTA row: camera + voice */}
+              <div className="grid grid-cols-2 gap-2 mb-3">
+                <CameraCTA onImage={handleParseImage} disabled={isParsingImage} />
+                <VoiceCTA onText={(t) => setInputText(t)} />
+              </div>
+
+              <div className="relative">
+                <textarea
+                  className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-sm resize-none h-24 focus:border-blue-500/50"
+                  placeholder={isParsingImage
+                    ? "AIが画像をスキャンしています..."
+                    : "またはメール本文を貼り付け / 音声入力でテキスト化"}
+                  value={isParsingImage ? "Analyzing image..." : inputText}
+                  disabled={isParsingImage}
+                  onChange={(e) => setInputText(e.target.value)}
+                />
+                {isParsing && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 rounded-lg">
+                    <div className="flex items-center gap-2 text-xs text-blue-300">
+                      <div className="w-4 h-4 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
+                      AIで解析中...
+                    </div>
+                  </div>
+                )}
+              </div>
+              <button
                 onClick={handleParseText}
                 disabled={isParsing || !inputText.trim()}
-                className="w-full py-3 bg-slate-800 border border-ui rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-slate-700 disabled:opacity-50 transition-colors"
+                className="w-full py-3 mt-3 bg-blue-600/20 border border-blue-500/30 hover:bg-blue-600/30 text-blue-200 rounded-lg text-xs font-bold uppercase tracking-wider disabled:opacity-40 transition-colors"
               >
-                {isParsing ? "読み取り中..." : "リストに追加"}
+                {isParsing ? "読み取り中..." : "テキストから訪問先を抽出"}
               </button>
             </div>
           </motion.div>
@@ -673,6 +990,48 @@ function MainApp() {
           >
             {/* Sidebar (Route List) */}
             <aside className="w-full lg:w-[380px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl">
+              {/* Savings Banner */}
+              {baseline && plans[activePlanIdx] && (() => {
+                const FUEL_KM_PER_L = 12;
+                const GAS_YEN_PER_L = 180;
+                const planDist = plans[activePlanIdx].totalDistanceKm;
+                const planDur = plans[activePlanIdx].totalDurationMin;
+                const savedKm = Math.max(0, baseline.totalDistanceKm - planDist);
+                const savedMin = Math.max(0, baseline.totalDurationMin - planDur);
+                const savedYen = Math.round((savedKm / FUEL_KM_PER_L) * GAS_YEN_PER_L);
+                const savedPct = baseline.totalDistanceKm > 0
+                  ? Math.round((savedKm / baseline.totalDistanceKm) * 100)
+                  : 0;
+                if (savedKm < 0.1 && savedMin < 1) return null;
+                return (
+                  <div className="border-b border-ui bg-gradient-to-br from-green-950/40 to-emerald-950/20 px-4 py-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-base">✓</span>
+                      <span className="text-[10px] uppercase tracking-wider font-bold text-green-300">入力順巡回比 節約効果</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div>
+                        <div className="text-xl font-bold text-green-300 num-font">−{savedKm.toFixed(1)}</div>
+                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">km短縮</div>
+                      </div>
+                      <div>
+                        <div className="text-xl font-bold text-green-300 num-font">−{savedMin}</div>
+                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">分節約</div>
+                      </div>
+                      <div>
+                        <div className="text-xl font-bold text-green-300 num-font">¥{savedYen.toLocaleString()}</div>
+                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">ガソリン代</div>
+                      </div>
+                    </div>
+                    {savedPct > 0 && (
+                      <p className="text-[10px] text-green-200/60 mt-2 text-center">
+                        距離ベースで <strong className="text-green-300">{savedPct}%</strong> 短縮（燃費12km/L・¥180/L 想定）
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Plan Tabs */}
               <div className="p-4 flex gap-2 border-b border-ui bg-bg/50 backdrop-blur-sm">
                 {plans.map((plan, idx) => (
@@ -691,21 +1050,26 @@ function MainApp() {
 
               {/* Path List */}
               <div className="flex-1 lg:overflow-y-auto p-4 space-y-3 custom-scrollbar lg:min-h-0">
-                {plans[activePlanIdx].legs.map((leg, idx) => (
+                {plans[activePlanIdx].legs.map((leg, idx) => {
+                  const visit = leg.visitId ? plans[activePlanIdx].order[idx] : null;
+                  const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
+                  return (
                   <div key={idx} className="relative">
-                    {leg.visitId ? (
-                      <motion.div 
+                    {leg.visitId && visit ? (
+                      <motion.div
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: idx * 0.05 }}
                         className={cn(
                           "card-bg p-4 rounded-xl border relative overflow-hidden transition-all",
+                          isCompleted ? "border-green-500/40 opacity-60" :
                           leg.status === 'violation' ? "border-red-500/30" : "border-ui"
                         )}
                       >
                         {/* Status bar */}
                         <div className={cn(
                           "absolute left-0 top-0 w-1 h-full",
+                          isCompleted ? "bg-green-500" :
                           leg.status === 'ok' ? "bg-green-500" : leg.status === 'warning' ? "bg-yellow-500" : "bg-red-500"
                         )} />
 
@@ -720,17 +1084,31 @@ function MainApp() {
                              )} />
                           </div>
                           <div className="flex gap-1">
-                            <button onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(plans[activePlanIdx].order[idx].address)}`, '_blank')} className="p-1 hover:bg-blue-500/10 rounded">
-                              <Navigation className="w-3.5 h-3.5 text-blue-400" />
+                            <button
+                              onClick={() => toggleCompleted(visit.id)}
+                              title={isCompleted ? '完了を取り消す' : '完了にする'}
+                              className={cn(
+                                "p-1.5 rounded transition-colors",
+                                isCompleted ? "bg-green-500/30 text-green-200" : "hover:bg-green-500/10 text-green-400"
+                              )}
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(visit.address)}`, '_blank')}
+                              title="この訪問先にナビ"
+                              className="p-1.5 hover:bg-blue-500/10 rounded"
+                            >
+                              <Navigation className="w-4 h-4 text-blue-400" />
                             </button>
                           </div>
                         </div>
 
-                        <h3 className="text-base font-bold mb-0.5">
-                          {plans[activePlanIdx].order[idx].customerName || "依頼者不明"}
+                        <h3 className={cn("text-base font-bold mb-0.5", isCompleted && "line-through text-secondary")}>
+                          {visit.customerName || "依頼者不明"}
                         </h3>
-                        <p className="text-[10px] text-secondary mb-3 truncate">
-                          {plans[activePlanIdx].order[idx].address}
+                        <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
+                          {visit.address}
                         </p>
 
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
@@ -803,15 +1181,6 @@ function MainApp() {
                                       <h3 className="text-sm font-bold text-orange-100 flex items-center gap-2 flex-wrap">
                                         <span className="text-base shrink-0">{candidate.icon || '🍔'}</span>
                                         <span className="truncate">{candidate.name}</span>
-                                        {candidate.hasParkingNear ? (
-                                            <span className="text-[9px] bg-green-500/20 text-green-300 border border-green-500/30 px-1 py-0.5 rounded leading-none flex items-center gap-0.5 shrink-0">
-                                              <span>🅿️</span> 近隣に駐車場あり
-                                            </span>
-                                        ) : (
-                                            <span className="text-[9px] bg-slate-500/20 text-slate-300 border border-slate-500/30 px-1 py-0.5 rounded leading-none flex items-center gap-0.5 shrink-0">
-                                              <span>🅿️</span> 情報なし
-                                            </span>
-                                        )}
                                         {candidate.rating && (
                                           <span className="text-[10px] text-yellow-500 font-bold flex items-center gap-0.5 shrink-0">
                                             ★ {candidate.rating}
@@ -837,28 +1206,55 @@ function MainApp() {
                        </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
 
               {/* Bottom CTA */}
-              <div className="p-4 border-t border-ui glass">
-                <button 
+              <div className="p-4 border-t border-ui glass space-y-3">
+                {plans[activePlanIdx].order.length > 0 && (() => {
+                  const total = plans[activePlanIdx].order.length;
+                  const done = plans[activePlanIdx].order.filter(v => completedVisitIds.has(v.id)).length;
+                  const pct = total > 0 ? (done / total) * 100 : 0;
+                  return (
+                    <div>
+                      <div className="flex justify-between items-baseline mb-1">
+                        <span className="text-[10px] uppercase tracking-wider font-bold text-secondary">本日の進捗</span>
+                        <span className="text-xs font-bold num-font text-white">{done} / {total} 件完了</span>
+                      </div>
+                      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-300"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <button
                   onClick={() => {
                     const plan = plans[activePlanIdx];
-                    let ways = [...plan.order.map(v => v.address)];
+                    // Skip already-completed visits in the external map handoff
+                    const remaining = plan.order.filter(v => !completedVisitIds.has(v.id));
+                    if (remaining.length === 0) {
+                      showNotice({ kind: 'success', title: '本日の訪問はすべて完了しました', detail: 'お疲れさまでした！' });
+                      return;
+                    }
+                    let ways = [...remaining.map(v => v.address)];
                     if (plan.lunchCandidates && plan.lunchCandidates.length > 0) {
                       const selectedIdx = selectedLunchCandidates[activePlanIdx] ?? 0;
-                      ways.splice(Math.floor(plan.order.length / 2) + 1, 0, plan.lunchCandidates[selectedIdx].address);
+                      ways.splice(Math.floor(remaining.length / 2) + 1, 0, plan.lunchCandidates[selectedIdx].address);
                     }
                     const waypoints = ways.map(w => encodeURIComponent(w)).join('/');
-                    const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : plan.order[plan.order.length - 1].address);
+                    const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : remaining[remaining.length - 1].address);
                     window.open(`https://www.google.com/maps/dir/${encodeURIComponent(settings.homeAddress)}/${waypoints}/${encodeURIComponent(dest || '')}`, '_blank');
                   }}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-bold text-sm shadow-xl shadow-blue-900/30 flex items-center justify-center gap-3 transition-colors"
+                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-extrabold text-sm shadow-xl shadow-blue-900/30 flex items-center justify-center gap-3 transition-colors active:scale-[0.98]"
                 >
-                  <Navigation className="w-5 h-5" /> 全ルートをMAPで開く
+                  <Navigation className="w-5 h-5" /> Google Maps でナビ開始
                 </button>
-                <button onClick={() => setActiveTab('input')} className="w-full mt-3 py-2 text-[10px] text-secondary hover:text-white transition-colors uppercase font-bold tracking-widest">
+                <button onClick={() => setActiveTab('input')} className="w-full py-2 text-[10px] text-secondary hover:text-white transition-colors uppercase font-bold tracking-widest">
                   条件編集に戻る
                 </button>
               </div>
@@ -917,22 +1313,127 @@ function MainApp() {
       {/* Floating Action Button */}
       {activeTab === 'input' && (
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#1A1D23] to-transparent z-40">
-           <button 
-             disabled={visits.length === 0 || isOptimizing}
-             onClick={handleOptimize}
-             className="w-full py-4 bg-blue-600 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-xl font-extrabold text-lg flex items-center justify-center gap-3 shadow-xl shadow-blue-900/40 relative active:scale-[0.98] transition-all"
-           >
-             {isOptimizing ? (
-               <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-             ) : (
-               <>
-                 <Navigation className="w-6 h-6" />
-                 ルートを計算
-               </>
-             )}
-           </button>
+          <div className="flex gap-2">
+            <button
+              disabled={visits.length === 0 || isOptimizing}
+              onClick={() => handleOptimize()}
+              className="flex-[2] py-4 bg-blue-600 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-xl font-extrabold text-lg flex items-center justify-center gap-3 shadow-xl shadow-blue-900/40 active:scale-[0.98] transition-all"
+            >
+              {isOptimizing ? (
+                <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
+              ) : (
+                <>
+                  <Navigation className="w-6 h-6" />
+                  ルートを計算
+                </>
+              )}
+            </button>
+            <button
+              disabled={visits.length === 0 || isOptimizing}
+              onClick={handleOptimizeFromCurrentLocation}
+              className={cn(
+                "flex-1 py-4 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-[0.98] transition-all border",
+                userPlan === 'pro'
+                  ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-400/40 text-white shadow-xl shadow-emerald-900/40"
+                  : "bg-slate-800 border-amber-500/30 text-amber-300 hover:bg-slate-700"
+              )}
+              title={userPlan === 'pro' ? '現在地から再最適化' : 'Pro機能: 現在地から再最適化'}
+            >
+              <MapPin className="w-5 h-5" />
+              <span>{userPlan === 'pro' ? '現在地から' : '現在地 ⚡Pro'}</span>
+            </button>
+          </div>
         </div>
       )}
+
+      {/* Toast / Notice */}
+      <AnimatePresence>
+        {notice && (
+          <motion.div
+            key="notice"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2rem)] max-w-md"
+          >
+            <div className={cn(
+              "rounded-xl border p-4 shadow-2xl backdrop-blur-md",
+              notice.kind === 'error' ? 'bg-red-950/90 border-red-500/40' :
+              notice.kind === 'success' ? 'bg-green-950/90 border-green-500/40' :
+              'bg-slate-900/90 border-ui'
+            )}>
+              <div className="flex items-start gap-3">
+                <span className="text-lg leading-none mt-0.5">
+                  {notice.kind === 'error' ? '⚠️' : notice.kind === 'success' ? '✓' : 'ℹ️'}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-bold mb-0.5">{notice.title}</h4>
+                  {notice.detail && (
+                    <p className="text-[11px] text-gray-300 leading-relaxed break-words">{notice.detail}</p>
+                  )}
+                  <div className="flex gap-2 mt-2">
+                    {notice.onRetry && (
+                      <button
+                        onClick={() => { const r = notice.onRetry; clearNotice(); r?.(); }}
+                        className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/20"
+                      >
+                        再試行
+                      </button>
+                    )}
+                    <button
+                      onClick={clearNotice}
+                      className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded hover:bg-white/10 text-gray-400"
+                    >
+                      閉じる
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* AI Unlock Modal (demo only) */}
+      <AnimatePresence>
+        {showAIUnlock && (
+          <AIUnlockModal
+            onClose={() => {
+              setShowAIUnlock(false);
+              pendingAIActionRef.current = null;
+            }}
+            onUnlock={() => {
+              setAIUnlocked(true);
+              refreshAIUsage();
+              setShowAIUnlock(false);
+              const cb = pendingAIActionRef.current;
+              pendingAIActionRef.current = null;
+              cb?.();
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Upgrade Modal */}
+      <AnimatePresence>
+        {upgradeReason && (
+          <UpgradeModal
+            reason={upgradeReason}
+            onClose={() => setUpgradeReason(null)}
+            onUpgrade={upgradeToPro}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Onboarding Modal — shown on first run */}
+      <AnimatePresence>
+        {showOnboarding && visits.length === 0 && (
+          <OnboardingModal
+            onTrySample={handleLoadSampleAndOptimize}
+            onClose={dismissOnboarding}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Lunch Spots Edit Modal */}
       <AnimatePresence>
@@ -962,6 +1463,174 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function AIUnlockModal({ onUnlock, onClose }: { onUnlock: () => void; onClose: () => void }) {
+  const [pw, setPw] = useState('');
+  const [error, setError] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  const submit = () => {
+    if (tryUnlockAI(pw)) {
+      onUnlock();
+    } else {
+      setError('パスワードが違います');
+      setPw('');
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  };
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.92, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-sm w-full p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-xl">🔒</div>
+          <div>
+            <h2 className="text-lg font-bold text-white">AI解析を解除</h2>
+            <p className="text-[11px] text-secondary">パスワードを入力（1日10回まで）</p>
+          </div>
+        </div>
+        <input
+          ref={inputRef}
+          type="password"
+          value={pw}
+          onChange={(e) => { setPw(e.target.value); setError(''); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+          placeholder="パスワード"
+          className={cn(
+            "w-full px-4 py-3 rounded-lg bg-slate-800 border text-white text-sm mb-2 focus:outline-none",
+            error ? "border-red-500/60" : "border-ui focus:border-amber-500/60"
+          )}
+        />
+        {error && <p className="text-[11px] text-red-400 mb-2">{error}</p>}
+        <div className="flex gap-2 mt-3">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-800 hover:bg-slate-700 border border-ui"
+          >
+            キャンセル
+          </button>
+          <button
+            onClick={submit}
+            disabled={!pw}
+            className="flex-[1.4] py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-900 disabled:opacity-40"
+          >
+            解除
+          </button>
+        </div>
+        <p className="text-[10px] text-secondary text-center mt-3 leading-relaxed">
+          このゲートは簡易的なものです。30日間ブラウザに保存されます。
+        </p>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function OnboardingModal({ onTrySample, onClose }: { onTrySample: () => void; onClose: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.92, y: 20, opacity: 0 }}
+        animate={{ scale: 1, y: 0, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        className="bg-slate-900 border border-blue-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl"
+      >
+        <div className="text-center mb-5">
+          <div className="w-14 h-14 rounded-full bg-blue-500/20 mx-auto flex items-center justify-center text-2xl mb-3">🚗</div>
+          <h2 className="text-xl font-bold text-white mb-1">ルート最適化へようこそ</h2>
+          <p className="text-xs text-secondary">30秒でどれくらい時間とガソリン代が節約できるか体験できます</p>
+        </div>
+        <div className="bg-slate-800/50 rounded-lg border border-ui p-4 mb-5">
+          <p className="text-[11px] text-secondary mb-2 font-bold uppercase tracking-wider">サンプルの内容</p>
+          <ul className="text-xs space-y-1.5 text-gray-300">
+            <li>• 新宿区・渋谷区・港区の訪問3件</li>
+            <li>• AIが最短ルートを自動計算</li>
+            <li>• 入力順巡回比の節約km/分/¥が見られます</li>
+          </ul>
+        </div>
+        <button
+          onClick={onTrySample}
+          className="w-full py-3 rounded-lg text-sm font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/30 mb-2"
+        >
+          サンプルで試す（30秒）
+        </button>
+        <button
+          onClick={onClose}
+          className="w-full py-2 rounded-lg text-[11px] font-bold uppercase tracking-wider text-secondary hover:text-white"
+        >
+          スキップして自分で入力
+        </button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function UpgradeModal({ reason, onClose, onUpgrade }: { reason: string; onClose: () => void; onUpgrade: () => void }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.92, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
+        className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-md w-full p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center text-xl">⚡</div>
+          <div>
+            <h2 className="text-lg font-bold text-amber-200">Proにアップグレード</h2>
+            <p className="text-[11px] text-amber-300/80">月額 ¥780 / 解約はいつでも</p>
+          </div>
+        </div>
+        <p className="text-sm text-gray-300 mb-5">{reason}</p>
+        <div className="bg-slate-800/50 rounded-lg p-4 border border-ui mb-5 space-y-2 text-xs">
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 訪問先 1日 <strong className="text-white">15件</strong> まで</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> GPS現在地から再最適化</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 月次節約レポート</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> マルチデバイス同期（近日対応）</div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={onClose}
+            className="flex-1 py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-slate-800 hover:bg-slate-700 border border-ui"
+          >
+            あとで
+          </button>
+          <button
+            onClick={onUpgrade}
+            className="flex-[1.4] py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-900"
+          >
+            Proを試す
+          </button>
+        </div>
+        <p className="text-[10px] text-secondary text-center mt-3">
+          （現在はデモ。決済連携は今後対応予定）
+        </p>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -1188,6 +1857,69 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
         </div>
       </motion.div>
     </motion.div>
+  );
+}
+
+function CameraCTA({ onImage, disabled }: { onImage: (base64: string, mime: string) => void, disabled: boolean }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const base64 = (ev.target?.result as string).split(',')[1];
+      onImage(base64, file.type);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+  return (
+    <>
+      <input ref={fileInputRef} type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
+      <button
+        onClick={() => fileInputRef.current?.click()}
+        disabled={disabled}
+        className={cn(
+          "py-3 px-3 rounded-lg flex items-center justify-center gap-2 border transition-all",
+          "bg-blue-500/10 border-blue-500/30 text-blue-200 hover:bg-blue-500/20 disabled:opacity-50",
+          disabled && "animate-pulse"
+        )}
+      >
+        <Camera className="w-5 h-5" />
+        <span className="text-xs font-bold">伝票を撮影</span>
+      </button>
+    </>
+  );
+}
+
+function VoiceCTA({ onText }: { onText: (t: string) => void }) {
+  const [isListening, setIsListening] = useState(false);
+  const start = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("お使いのブラウザは音声入力をサポートしていません");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'ja-JP';
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => onText(event.results[0][0].transcript);
+    recognition.onend = () => setIsListening(false);
+    recognition.start();
+  };
+  return (
+    <button
+      onClick={start}
+      className={cn(
+        "py-3 px-3 rounded-lg flex items-center justify-center gap-2 border transition-all",
+        isListening
+          ? "bg-red-500/20 border-red-500/40 text-red-300 animate-pulse"
+          : "bg-purple-500/10 border-purple-500/30 text-purple-200 hover:bg-purple-500/20"
+      )}
+    >
+      <Mic className="w-5 h-5" />
+      <span className="text-xs font-bold">{isListening ? "聞き取り中" : "音声で入力"}</span>
+    </button>
   );
 }
 
