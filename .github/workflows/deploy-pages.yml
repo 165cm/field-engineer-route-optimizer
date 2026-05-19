@@ -47,6 +47,12 @@ jobs:
           # is only a soft barrier). Use a dedicated key with:
           #   - Daily quota cap on the AI Studio side (e.g. 200/day)
           #   - Billing budget alert (e.g. $5/month)
+          # NOTE: If you set HTTP-referrer restrictions on this key in GCP,
+          # the allow-list MUST include the Pages origin, e.g.
+          #   https://<owner>.github.io/<repo>/*
+          # Otherwise the API returns 403 "Requests to this API ... are blocked".
+          # If unsure, leave the key with "None" application restrictions and
+          # rely on the daily quota + budget alert above.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: npx vite build
 

@@ -349,6 +349,15 @@ function MainApp() {
   // Map raw errors (network, HTTP, API status strings) to a user-friendly notice.
   const explainError = (e: unknown, fallbackTitle: string): { title: string; detail: string } => {
     const msg = e instanceof Error ? e.message : String(e);
+    if (/Gemini API 403|API_KEY_HTTP_REFERRER_BLOCKED|are blocked/i.test(msg)) {
+      return {
+        title: 'AI解析サービスにアクセスできません',
+        detail: 'Gemini APIキーの参照元(HTTPリファラー)制限によりブロックされました。管理者はGoogle AI Studio / GCPコンソールでこのサイトのURLを許可リストに追加するか、リファラー制限を解除してください。',
+      };
+    }
+    if (/Gemini API (401|400)/i.test(msg)) {
+      return { title: 'AI解析サービスにアクセスできません', detail: 'Gemini APIキーが未設定または無効です。管理者にお問い合わせください。' };
+    }
     if (/429/.test(msg)) {
       return { title: 'API利用上限に達しました', detail: '1時間あたりの利用回数を超えています。少し時間を置いてからお試しください。' };
     }
