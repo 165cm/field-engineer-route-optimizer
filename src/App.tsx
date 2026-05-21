@@ -2279,13 +2279,21 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
       .filter(Boolean) as google.maps.routes.Waypoint[];
 
     let cancelled = false;
+    // The new Routes API uses RouteTravelMode.DRIVE ("DRIVE"), not the old
+    // DirectionsService TravelMode.DRIVING ("DRIVING"). Passing the wrong
+    // string silently rejects the request, which is why nothing rendered.
+    const driveMode =
+      (routesLib as any)?.RouteTravelMode?.DRIVE ??
+      (google.maps as any)?.routes?.RouteTravelMode?.DRIVE ??
+      'DRIVE';
+
     routesLib.Route.computeRoutes({
       origin: { location: originCoords },
       destination: { location: destCoords },
       intermediates: intermediate,
-      travelMode: google.maps.TravelMode.DRIVING,
+      travelMode: driveMode,
       fields: ['path', 'legs.steps.polyline', 'polyline'],
-    }).then(({ routes }) => {
+    } as any).then(({ routes }) => {
       if (cancelled) return;
       const route = routes?.[0];
       // Try several places the path may live, depending on Maps JS version.
