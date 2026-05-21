@@ -2274,47 +2274,35 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
 
     if (!routesLib) return;
 
-    const intermediate = visitsForRoute
-      .map(v => (v.coords ? { location: v.coords } : null))
-      .filter(Boolean) as google.maps.routes.Waypoint[];
+    // Use DirectionsService (Directions API) for the road-following path.
+    // The new Route.computeRoutes (Routes API) returned 403 PERMISSION_DENIED
+    // unless that specific API was enabled in GCP; DirectionsService uses the
+    // long-standing Directions API which is the more commonly enabled one and
+    // gives us the same shape (overview_path: LatLng[]).
+    const waypoints: google.maps.DirectionsWaypoint[] = visitsForRoute
+      .map(v => (v.coords ? { location: v.coords, stopover: true } : null))
+      .filter(Boolean) as google.maps.DirectionsWaypoint[];
 
     let cancelled = false;
-    routesLib.Route.computeRoutes({
-      origin: { location: originCoords },
-      destination: { location: destCoords },
-      intermediates: intermediate,
+    const directions = new google.maps.DirectionsService();
+    directions.route({
+      origin: originCoords,
+      destination: destCoords,
+      waypoints,
+      optimizeWaypoints: false, // visit order is already optimized upstream
       travelMode: google.maps.TravelMode.DRIVING,
-      fields: ['path'],
-    }).then(({ routes }) => {
+    }).then(result => {
       if (cancelled) return;
-      const route = routes?.[0];
-      // Try several places the path may live, depending on Maps JS version.
-      let path: google.maps.LatLng[] | undefined =
-        (route as any)?.path ||
-        (route as any)?.polyline?.geometry?.path ||
-        (() => {
-          // Fall back to concatenating leg.steps polylines.
-          const legs = (route as any)?.legs as any[] | undefined;
-          if (!legs?.length) return undefined;
-          const all: google.maps.LatLng[] = [];
-          legs.forEach(l => {
-            l.steps?.forEach((s: any) => {
-              const stepPath = s.polyline?.geometry?.path || s.path;
-              if (stepPath) all.push(...stepPath);
-            });
-          });
-          return all.length ? all : undefined;
-        })();
+      const path = result.routes?.[0]?.overview_path;
       if (!path || path.length === 0) {
-        console.warn('Routes API returned no path; keeping straight-line fallback', route);
+        console.warn('DirectionsService returned no path; keeping straight-line fallback', result);
         return;
       }
-      // Upgrade: remove the straight-line fallback and draw the real path.
       polylinesRef.current.forEach(p => p.setMap(null));
       polylinesRef.current = [];
       renderPolyline(path, false);
     }).catch(err => {
-      console.error('Route computation failed; keeping straight-line fallback', err);
+      console.error('DirectionsService failed; keeping straight-line fallback', err);
     });
 
     return () => {
