@@ -1,12 +1,12 @@
 import { Visit, RoutePlan, Settings, Leg } from "../types";
 import type { DistanceMatrixLike } from "../services/googleMapsService";
 
-function parseTime(timeStr: string): number {
+export function parseTime(timeStr: string): number {
   const [h, m] = timeStr.split(":").map(Number);
   return h * 60 + m;
 }
 
-function formatTime(minutes: number): string {
+export function formatTime(minutes: number): string {
   const h = Math.floor(minutes / 60) % 24;
   const m = minutes % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;

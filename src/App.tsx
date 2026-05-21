@@ -39,6 +39,7 @@ import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 import { isDemoMode } from './lib/demoMode';
 import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
+import { ScheduleClock } from './components/ScheduleClock';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -1060,6 +1061,11 @@ function MainApp() {
                     案{plan.id}: {plan.id === 'A' ? '最短' : plan.id === 'B' ? '余裕' : '確実'}
                   </button>
                 ))}
+              </div>
+
+              {/* Schedule Clock */}
+              <div className="px-4 pt-4 pb-3 border-b border-ui">
+                <ScheduleClock plan={plans[activePlanIdx]} />
               </div>
 
               {/* Path List */}
