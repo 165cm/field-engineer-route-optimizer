@@ -2292,7 +2292,7 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
       destination: { location: destCoords },
       intermediates: intermediate,
       travelMode: driveMode,
-      fields: ['path', 'legs.steps.polyline', 'polyline'],
+      fields: ['path'],
     } as any).then(({ routes }) => {
       if (cancelled) return;
       const route = routes?.[0];
