@@ -645,11 +645,16 @@ function MainApp() {
             if (i - 1 < plan.order.length) {
               const visit = plan.order[i - 1];
               if (visit?.timeWindow) {
-                const start = parseTime(visit.timeWindow.start);
-                const end = parseTime(visit.timeWindow.end);
+                const hasStart = !!visit.timeWindow.start;
+                const hasEnd = !!visit.timeWindow.end;
+                const start = hasStart ? parseTime(visit.timeWindow.start) : null;
+                const end = hasEnd ? parseTime(visit.timeWindow.end) : null;
                 const arr = parseTime(plan.legs[i].arrivalTime);
-                if (arr > end) plan.legs[i].status = 'violation';
-                else if (arr > end - 30 || arr < start) plan.legs[i].status = 'warning';
+                if (end !== null && arr > end) plan.legs[i].status = 'violation';
+                else if (
+                  (end !== null && arr > end - 30) ||
+                  (start !== null && arr < start)
+                ) plan.legs[i].status = 'warning';
               }
             }
           }
@@ -1127,7 +1132,14 @@ function MainApp() {
                               "font-bold",
                               leg.status === 'ok' ? "text-green-400" : leg.status === 'warning' ? "text-yellow-400" : "text-red-400"
                             )}>
-                              {plans[activePlanIdx].order[idx].timeWindow ? `${plans[activePlanIdx].order[idx].timeWindow?.start}-${plans[activePlanIdx].order[idx].timeWindow?.end}` : "指定なし"}
+                              {(() => {
+                                const tw = plans[activePlanIdx].order[idx].timeWindow;
+                                if (!tw) return "指定なし";
+                                if (tw.start && tw.end) return `${tw.start}-${tw.end}`;
+                                if (tw.start) return `${tw.start} 以降`;
+                                if (tw.end) return `${tw.end} 以前`;
+                                return "指定なし";
+                              })()}
                             </span>
                           </div>
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
