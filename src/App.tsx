@@ -209,6 +209,7 @@ function MainApp() {
       homeAddress: '東京都新宿区新宿1-1-1',
       endLocation: 'home',
       ...parsed,
+      startTime: parsed.startTime || '09:00',
       lunchSpotIds: parsed.lunchSpotIds || (parsed.lunchSpotId && parsed.lunchSpotId !== 'none' ? [parsed.lunchSpotId] : []),
       savedLunchSpots: savedSpots,
       tasks: parsed.tasks || [
@@ -240,6 +241,7 @@ function MainApp() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [showLunchSettings, setShowLunchSettings] = useState(false);
   const [showTasksSettings, setShowTasksSettings] = useState(false);
+  const [showStartEndSettings, setShowStartEndSettings] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
@@ -762,10 +764,33 @@ function MainApp() {
             <div className="bg-card p-4 rounded-xl border border-ui">
               <div className="flex justify-between items-center mb-3">
                 <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider">
-                  <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点
+                  <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・出発時刻
+                </div>
+                <button
+                  onClick={() => setShowStartEndSettings(true)}
+                  className="text-[10px] bg-slate-800 text-blue-400 hover:text-blue-300 font-bold px-2 py-1 rounded border border-ui"
+                >
+                  編集
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">起点</span>
+                  <p className="text-sm font-medium truncate">{settings.homeAddress}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">出発</span>
+                  <p className="text-sm font-medium num-font">{settings.startTime || '09:00'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">終点</span>
+                  <p className="text-sm font-medium truncate">
+                    {settings.endLocation === 'home' && '起点と同じ'}
+                    {settings.endLocation === 'none' && '終点なし（最終訪問先で解散）'}
+                    {settings.endLocation === 'custom' && (settings.customEndAddress || '未設定')}
+                  </p>
                 </div>
               </div>
-              <p className="text-sm font-medium">{settings.homeAddress}</p>
             </div>
 
             <div className="flex justify-between items-end mt-4 mb-1">
@@ -1487,13 +1512,27 @@ function MainApp() {
       {/* Tasks Edit Modal */}
       <AnimatePresence>
         {showTasksSettings && (
-          <TasksModal 
+          <TasksModal
             settings={settings}
             onSave={(val) => {
               setSettings(val);
               setShowTasksSettings(false);
             }}
             onClose={() => setShowTasksSettings(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Start/End/Departure Modal */}
+      <AnimatePresence>
+        {showStartEndSettings && (
+          <StartEndModal
+            settings={settings}
+            onSave={(val) => {
+              setSettings(val);
+              setShowStartEndSettings(false);
+            }}
+            onClose={() => setShowStartEndSettings(false)}
           />
         )}
       </AnimatePresence>
@@ -1895,6 +1934,120 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
   );
 }
 
+function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
+  const [homeAddress, setHomeAddress] = useState(settings.homeAddress);
+  const [startTime, setStartTime] = useState(settings.startTime || '09:00');
+  const [endLocation, setEndLocation] = useState<'home' | 'none' | 'custom'>(settings.endLocation);
+  const [customEndAddress, setCustomEndAddress] = useState(settings.customEndAddress || '');
+
+  const handleSave = () => {
+    const next: Settings = {
+      ...settings,
+      homeAddress: homeAddress.trim() || settings.homeAddress,
+      startTime,
+      endLocation,
+      customEndAddress: endLocation === 'custom' ? customEndAddress.trim() : settings.customEndAddress,
+    };
+    // Invalidate cached coords if the home address changed so the next
+    // optimization re-geocodes.
+    if (next.homeAddress !== settings.homeAddress) {
+      next.homeCoords = undefined;
+    }
+    if (endLocation === 'custom' && customEndAddress.trim() !== (settings.customEndAddress || '')) {
+      next.customEndCoords = undefined;
+    }
+    onSave(next);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.95 }}
+        animate={{ scale: 1 }}
+        exit={{ scale: 0.95 }}
+        className="bg-card w-full max-w-md flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
+      >
+        <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・出発時刻
+          </h2>
+          <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar">
+          {/* Start address */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">起点（出発地）住所</label>
+            <input
+              className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none font-medium"
+              value={homeAddress}
+              onChange={(e) => setHomeAddress(e.target.value)}
+              placeholder="例: 東京都新宿区新宿1-1-1"
+            />
+          </div>
+
+          {/* Departure time */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">出発時刻</label>
+            <input
+              type="time"
+              className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none num-font"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+            />
+            <p className="text-[10px] text-secondary mt-1">この時刻に起点を出発するものとして、各訪問先の到着時刻を計算します。</p>
+          </div>
+
+          {/* End location */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">終点</label>
+            <div className="space-y-2">
+              {([
+                { v: 'home', label: '起点と同じ場所に戻る' },
+                { v: 'custom', label: '別の住所を指定' },
+                { v: 'none', label: '終点なし（最終訪問先で解散）' },
+              ] as { v: 'home' | 'none' | 'custom', label: string }[]).map(opt => (
+                <label key={opt.v} className={cn(
+                  'flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors',
+                  endLocation === opt.v ? 'bg-blue-500/10 border-blue-500/40' : 'bg-slate-800/40 border-ui hover:bg-slate-800/70'
+                )}>
+                  <input
+                    type="radio"
+                    name="endLocation"
+                    value={opt.v}
+                    checked={endLocation === opt.v}
+                    onChange={() => setEndLocation(opt.v)}
+                    className="accent-blue-500"
+                  />
+                  <span className="text-sm font-medium">{opt.label}</span>
+                </label>
+              ))}
+            </div>
+            {endLocation === 'custom' && (
+              <input
+                className="mt-2 w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none font-medium"
+                value={customEndAddress}
+                onChange={(e) => setCustomEndAddress(e.target.value)}
+                placeholder="終点の住所"
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
+           <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">キャンセル</button>
+           <button onClick={handleSave} className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30">設定を反映</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function CameraCTA({ onImage, disabled }: { onImage: (base64: string, mime: string) => void, disabled: boolean }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2080,27 +2233,47 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
     }).then(({ routes }) => {
       if (cancelled) return;
       const path = routes?.[0]?.path;
-      if (!path || path.length === 0) return;
-      // White halo + colored line for legibility on both light and dark maps.
+      if (!path || path.length === 0) {
+        console.warn('Route path is empty', routes);
+        return;
+      }
+      // White halo underneath for legibility on dark/satellite/light maps.
       const halo = new google.maps.Polyline({
         path,
         geodesic: true,
         strokeColor: '#ffffff',
-        strokeOpacity: 0.7,
-        strokeWeight: 8,
+        strokeOpacity: 0.85,
+        strokeWeight: 10,
         zIndex: 1,
       });
+      // Main line + repeating forward arrows so the direction of travel is
+      // unmistakable on a sinuous route.
+      const arrow: google.maps.IconSequence = {
+        icon: {
+          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+          scale: 3,
+          strokeColor: '#ffffff',
+          strokeWeight: 1.5,
+          fillColor: '#1d4ed8',
+          fillOpacity: 1,
+        },
+        offset: '0',
+        repeat: '90px',
+      };
       const line = new google.maps.Polyline({
         path,
         geodesic: true,
-        strokeColor: '#2563eb',
-        strokeOpacity: 0.95,
-        strokeWeight: 5,
+        strokeColor: '#1d4ed8',
+        strokeOpacity: 1,
+        strokeWeight: 6,
         zIndex: 2,
+        icons: [arrow],
       });
       halo.setMap(map);
       line.setMap(map);
       polylinesRef.current = [halo, line];
+    }).catch(err => {
+      console.error('Route computation failed', err);
     });
 
     return () => {

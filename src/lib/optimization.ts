@@ -91,7 +91,7 @@ export function optimizeRoutes(
   }
   generatePermutations(Array.from({ length: visitCount }, (_, i) => i + 1));
 
-  const startMinutes = 9 * 60; // Assume 9:00 start if not specified
+  const startMinutes = settings.startTime ? parseTime(settings.startTime) : 9 * 60;
 
   function calculatePlan(orderIndices: number[], planId: 'A' | 'B' | 'C'): RoutePlan {
     let currentMinutes = startMinutes;
