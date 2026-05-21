@@ -35,18 +35,21 @@ const STATUS_DOT: Record<SegmentStatus, string | null> = {
   violation: '#ef4444',
 };
 
+// Build a privacy-safe label for a visit. Customer names are intentionally
+// NEVER used (they're considered personal info). Today this returns just the
+// town extracted from the address, e.g. "東京都新宿区西新宿2-8-1" → "西新宿".
+// Future: append a short task / memo suffix → "西新宿/基盤交換".
 function shortLabel(visit: Visit | undefined): string {
   if (!visit) return '';
-  const name = visit.customerName?.trim();
-  if (name) {
-    return name.replace(/(様|さん|殿|邸)$/g, '').slice(0, 5);
-  }
   const addr = visit.address || '';
   // Extract the town portion: anything after the last 区/市/町/村 up to the
   // first street-number digit (ASCII or full-width / kanji numerals).
   const m = addr.match(/[市区町村]([^0-9０-９一二三四五六七八九十百千]+)/);
-  if (m && m[1]) return m[1].slice(0, 5);
-  return addr.slice(0, 5);
+  const town = m && m[1] ? m[1].slice(0, 6) : addr.slice(0, 6);
+  // Placeholder for the future "/task" suffix — keeping the join logic here
+  // so adding a task lookup later is a one-line change:
+  // return task ? `${town}/${task.slice(0, 5)}` : town;
+  return town;
 }
 
 function buildSegments(plan: RoutePlan): Segment[] {

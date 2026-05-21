@@ -13,31 +13,32 @@ const MODEL = 'gemini-2.5-flash';
 
 type ParsedVisit = {
   address: string;
-  customerName?: string;
   memo?: string;
   startTime?: string | null;
   endTime?: string | null;
   difficulty?: number;
 };
 
+// Customer names are intentionally excluded from the schema for privacy —
+// AI parsing should NOT extract personal identifiers from receipts / lists.
 const RESPONSE_SCHEMA = {
   type: 'ARRAY',
   items: {
     type: 'OBJECT',
     properties: {
       address: { type: 'STRING' },
-      customerName: { type: 'STRING' },
       memo: { type: 'STRING' },
       startTime: { type: 'STRING', nullable: true },
       endTime: { type: 'STRING', nullable: true },
       difficulty: { type: 'INTEGER' },
     },
-    required: ['address', 'customerName', 'memo', 'difficulty'],
+    required: ['address', 'memo', 'difficulty'],
   },
 };
 
 const TEXT_PROMPT = (text: string) => `以下のテキストから、家電修理の訪問先情報を抽出してJSON形式で返してください。
-1行に1件とは限りません。住所、顧客名、時間指定（あれば）、作業メモなどを読み取ってください。
+1行に1件とは限りません。住所、時間指定（あれば）、作業メモ（用件・作業内容）などを読み取ってください。
+個人名（顧客名）は個人情報保護のため抽出しないでください。メモ欄に名前が含まれていても省略してください。
 最大5件まで。
 
 テキスト:
@@ -47,8 +48,7 @@ ${text}
 [
   {
     "address": "住所",
-    "customerName": "名前(不明なら空)",
-    "memo": "用件・メモ",
+    "memo": "用件・作業メモ（個人名は含めない）",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。文脈から推測して。デフォルト2)"
@@ -56,15 +56,15 @@ ${text}
 ]`;
 
 const IMAGE_PROMPT = `この画像（修理伝票やリストのスクリーンショット）から、家電修理の訪問先情報を抽出してJSON形式で返してください。
-住所、顧客名、時間指定、作業メモなどを可能な限り読み取ってください。
+住所、時間指定、作業メモ（用件・作業内容）などを可能な限り読み取ってください。
+個人名（顧客名）は個人情報保護のため抽出しないでください。画像に名前が写っていてもJSONには含めないでください。
 最大5件まで。
 
 出力は以下の配列形式にしてください。
 [
   {
     "address": "住所",
-    "customerName": "名前(不明なら空)",
-    "memo": "用件・メモ",
+    "memo": "用件・作業メモ（個人名は含めない）",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。内容から推測して。デフォルト2)"

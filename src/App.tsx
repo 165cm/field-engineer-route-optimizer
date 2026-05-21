@@ -278,9 +278,9 @@ function MainApp() {
 
   const handleLoadSampleAndOptimize = () => {
     const sample: Visit[] = [
-      { id: 's1', address: '東京都新宿区西新宿2-8-1', customerName: '田中様', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
-      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', customerName: '佐藤様', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
-      { id: 's3', address: '東京都港区六本木6-10-1', customerName: '鈴木様', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
+      { id: 's1', address: '東京都新宿区西新宿2-8-1', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
+      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
+      { id: 's3', address: '東京都港区六本木6-10-1', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
     ];
     setVisits(sample);
     dismissOnboarding();
@@ -406,7 +406,6 @@ function MainApp() {
     const newVisit: Visit = {
       id: Math.random().toString(36).substr(2, 9),
       address: '',
-      customerName: '',
       workMinutes: 60,
       difficulty: 2
     };
@@ -434,7 +433,7 @@ function MainApp() {
     const newVisits = data.map((v: any) => ({
       id: Math.random().toString(36).substr(2, 9),
       address: v.address,
-      customerName: v.customerName,
+      // customerName intentionally not copied from AI-parsed data (privacy).
       memo: v.memo,
       workMinutes: 60,
       difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
@@ -828,10 +827,9 @@ function MainApp() {
                         onChange={(e) => {
                           const tId = e.target.value;
                           const task = settings.tasks.find(t => t.id === tId);
-                          handleUpdateVisit(visit.id, { 
-                            taskId: tId, 
-                            customerName: task?.name || '', // 互換性のための保存
-                            workMinutes: task ? task.defaultMinutes : visit.workMinutes 
+                          handleUpdateVisit(visit.id, {
+                            taskId: tId,
+                            workMinutes: task ? task.defaultMinutes : visit.workMinutes
                           });
                         }}
                       >
@@ -1170,8 +1168,12 @@ function MainApp() {
                           </div>
                         </div>
 
-                        <h3 className={cn("text-base font-bold mb-0.5", isCompleted && "line-through text-secondary")}>
-                          {visit.customerName || "依頼者不明"}
+                        <h3 className={cn("text-base font-bold mb-0.5 truncate", isCompleted && "line-through text-secondary")}>
+                          {(() => {
+                            const task = settings.tasks.find(t => t.id === visit.taskId);
+                            if (task) return task.name;
+                            return visit.memo?.slice(0, 30) || '訪問先';
+                          })()}
                         </h3>
                         <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
                           {visit.address}

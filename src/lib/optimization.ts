@@ -142,8 +142,8 @@ export function optimizeRoutes(
       const endTime = formatTime(currentMinutes);
 
       legs.push({
-        fromName: prevIdx === 0 ? "起点" : visits[prevIdx - 1].customerName || visits[prevIdx - 1].address,
-        toName: visit.customerName || visit.address,
+        fromName: prevIdx === 0 ? "起点" : visits[prevIdx - 1].address,
+        toName: visit.address,
         durationMin: travelTime,
         distanceKm: travelDist,
         arrivalTime,
@@ -178,7 +178,7 @@ export function optimizeRoutes(
       totalDistance += travelDist;
       
       legs.push({
-        fromName: visits[prevIdx - 1].customerName || visits[prevIdx - 1].address,
+        fromName: visits[prevIdx - 1].address,
         toName: "終点",
         durationMin: travelTime,
         distanceKm: travelDist,
