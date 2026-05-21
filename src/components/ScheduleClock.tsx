@@ -1,7 +1,7 @@
 import { RoutePlan } from '../types';
-import { parseTime, formatTime } from '../lib/optimization';
+import { parseTime, formatTime, PREP_MIN } from '../lib/optimization';
 
-type SegmentKind = 'travel' | 'work' | 'lunch';
+type SegmentKind = 'travel' | 'work' | 'prep' | 'lunch';
 type SegmentStatus = 'ok' | 'warning' | 'violation';
 
 type Segment = {
@@ -20,8 +20,11 @@ const LUNCH_GAP_THRESHOLD_MIN = 30;
 const COLORS: Record<SegmentKind, string> = {
   travel: '#3b82f6',
   work: '#22c55e',
+  prep: '#86efac',   // lighter green for prep/cleanup
   lunch: '#f97316',
 };
+
+const IDLE_TRACK_COLOR = '#475569'; // slate-600 — visible grey for empty time
 
 const STATUS_DOT: Record<SegmentStatus, string | null> = {
   ok: null,
@@ -43,12 +46,19 @@ function buildSegments(plan: RoutePlan): Segment[] {
       status: leg.status,
     });
     if (leg.visitId) {
-      segments.push({
-        kind: 'work',
-        startMin: arrivalMin,
-        endMin: parseTime(leg.endTime),
-        status: leg.status,
-      });
+      const endMin = parseTime(leg.endTime);
+      if (leg.workStartTime && leg.workEndTime) {
+        const ws = parseTime(leg.workStartTime);
+        const we = parseTime(leg.workEndTime);
+        // Prep: the 15min immediately before workStart. Anything earlier
+        // (e.g. waiting for a 以降 time window) stays as grey track.
+        segments.push({ kind: 'prep', startMin: ws - PREP_MIN, endMin: ws });
+        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status });
+        segments.push({ kind: 'prep', startMin: we, endMin: endMin });
+      } else {
+        // Legacy data: no prep/cleanup info, draw the whole site time as work.
+        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status });
+      }
     }
     const next = legs[i + 1];
     if (next) {
@@ -105,7 +115,7 @@ export function ScheduleClock({ plan }: { plan: RoutePlan }) {
     .filter(s => s.kind === 'travel')
     .reduce((sum, s) => sum + (s.endMin - s.startMin), 0);
   const totalWork = segments
-    .filter(s => s.kind === 'work')
+    .filter(s => s.kind === 'work' || s.kind === 'prep')
     .reduce((sum, s) => sum + (s.endMin - s.startMin), 0);
 
   const hourLabels = [
@@ -123,14 +133,15 @@ export function ScheduleClock({ plan }: { plan: RoutePlan }) {
         role="img"
         aria-label="本日のスケジュール時計"
       >
-        {/* Track */}
+        {/* Track — visible grey so empty/idle time is obvious */}
         <circle
           cx={CENTER}
           cy={CENTER}
           r={RADIUS}
           fill="none"
-          stroke="#1e293b"
+          stroke={IDLE_TRACK_COLOR}
           strokeWidth={STROKE}
+          opacity={0.55}
         />
         {/* Hour tick marks (every hour) */}
         {Array.from({ length: 12 }, (_, i) => {
@@ -217,15 +228,21 @@ export function ScheduleClock({ plan }: { plan: RoutePlan }) {
         </text>
       </svg>
       {/* Legend */}
-      <div className="flex items-center justify-center gap-2 text-[10px] font-bold">
+      <div className="flex items-center justify-center gap-1.5 flex-wrap text-[10px] font-bold">
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">
           <span className="w-2 h-2 rounded-full bg-blue-500" /> 移動
         </span>
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/15 text-green-300 border border-green-500/30">
           <span className="w-2 h-2 rounded-full bg-green-500" /> 作業
         </span>
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-300/10 text-green-200 border border-green-300/30">
+          <span className="w-2 h-2 rounded-full bg-green-300" /> 準備・撤収
+        </span>
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30">
           <span className="w-2 h-2 rounded-full bg-orange-500" /> 昼休憩
+        </span>
+        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-300 border border-slate-500/30">
+          <span className="w-2 h-2 rounded-full bg-slate-500" /> 空き
         </span>
       </div>
     </div>

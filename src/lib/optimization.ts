@@ -12,6 +12,9 @@ export function formatTime(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+export const PREP_MIN = 15;
+export const CLEANUP_MIN = 15;
+
 export type Baseline = {
   totalDurationMin: number;
   totalDistanceKm: number;
@@ -130,7 +133,12 @@ export function optimizeRoutes(
         }
       }
 
+      // 15min prep → work → 15min cleanup
+      currentMinutes += PREP_MIN;
+      const workStartTime = formatTime(currentMinutes);
       currentMinutes += visit.workMinutes;
+      const workEndTime = formatTime(currentMinutes);
+      currentMinutes += CLEANUP_MIN;
       const endTime = formatTime(currentMinutes);
 
       legs.push({
@@ -139,6 +147,8 @@ export function optimizeRoutes(
         durationMin: travelTime,
         distanceKm: travelDist,
         arrivalTime,
+        workStartTime,
+        workEndTime,
         endTime,
         status,
         visitId: visit.id

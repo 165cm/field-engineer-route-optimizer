@@ -641,6 +641,12 @@ function MainApp() {
             if (plan.legs[i].arrivalTime) {
               plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + LUNCH_MIN);
             }
+            if (plan.legs[i].workStartTime) {
+              plan.legs[i].workStartTime = formatTime(parseTime(plan.legs[i].workStartTime!) + LUNCH_MIN);
+            }
+            if (plan.legs[i].workEndTime) {
+              plan.legs[i].workEndTime = formatTime(parseTime(plan.legs[i].workEndTime!) + LUNCH_MIN);
+            }
             if (plan.legs[i].endTime) {
               plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + LUNCH_MIN);
             }
@@ -1151,7 +1157,8 @@ function MainApp() {
                           </div>
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
                             <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">滞在 / 完了</span>
-                            <span className="font-bold">{plans[activePlanIdx].order[idx].workMinutes}分 → {leg.endTime}</span>
+                            <span className="font-bold">{plans[activePlanIdx].order[idx].workMinutes + 30}分 → {leg.endTime}</span>
+                            <span className="block text-[9px] text-secondary font-medium mt-0.5">準備15+作業{plans[activePlanIdx].order[idx].workMinutes}+撤収15</span>
                           </div>
                         </div>
                       </motion.div>
