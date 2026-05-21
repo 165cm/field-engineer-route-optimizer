@@ -1028,15 +1028,15 @@ function MainApp() {
             </div>
           </motion.div>
         ) : (
-          <motion.div 
+          <motion.div
             key="result"
             initial={{ opacity: 0, x: 50 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -50 }}
-            className="flex flex-col lg:flex-row w-full lg:h-[calc(100vh-64px)] lg:overflow-hidden overflow-y-auto"
+            className="flex flex-col w-full max-w-3xl mx-auto"
           >
-            {/* Sidebar (Route List) */}
-            <aside className="w-full lg:w-[380px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl">
+            {/* Result Panel */}
+            <aside className="w-full bg-bg border-ui flex flex-col shrink-0 z-10">
               {/* Savings Banner */}
               {baseline && plans[activePlanIdx] && (() => {
                 const FUEL_KM_PER_L = 12;
@@ -1100,8 +1100,22 @@ function MainApp() {
                 <ScheduleClock plan={plans[activePlanIdx]} />
               </div>
 
+              {/* Map (positioned directly under the schedule clock) */}
+              <div className="h-[360px] relative border-b border-ui bg-bg">
+                <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
+              </div>
+              {/* Compact map legend */}
+              <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
+                <div className="flex items-center gap-3">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" /><span className="font-bold text-gray-300">正常</span></span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#fbbf24]" /><span className="font-bold text-gray-300">余裕少</span></span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_#f87171]" /><span className="font-bold text-gray-300">遅延懸念</span></span>
+                </div>
+                <span className="text-secondary italic">案: {plans[activePlanIdx].label}</span>
+              </div>
+
               {/* Path List */}
-              <div className="flex-1 lg:overflow-y-auto p-4 space-y-3 custom-scrollbar lg:min-h-0">
+              <div className="p-4 space-y-3 custom-scrollbar">
                 {plans[activePlanIdx].legs.map((leg, idx) => {
                   const visit = leg.visitId ? plans[activePlanIdx].order[idx] : null;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
@@ -1319,53 +1333,6 @@ function MainApp() {
                 </button>
               </div>
             </aside>
-
-            {/* Map Section */}
-            <section className="w-full h-[450px] lg:h-full lg:flex-1 relative bg-bg overflow-hidden shrink-0 flex-col">
-              {/* Interactive Map */}
-              <div className="absolute inset-0 z-0 flex">
-                <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
-              </div>
-
-              {/* Floating Stats */}
-              <div className="absolute top-6 left-6 z-10 hidden sm:block">
-                <div className="glass p-4 rounded-2xl border border-ui shadow-2xl flex gap-8">
-                  <div className="flex flex-col">
-                    <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動時間</span>
-                    <span className="text-2xl num-font">{plans[activePlanIdx].totalDurationMin}<span className="text-xs font-normal text-secondary ml-1">min</span></span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動距離</span>
-                    <span className="text-2xl num-font">{plans[activePlanIdx].totalDistanceKm.toFixed(1)}<span className="text-xs font-normal text-secondary ml-1">km</span></span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">最終完了予定</span>
-                    <span className="text-2xl num-font text-blue-400">{plans[activePlanIdx].endTime}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Map Footer Info */}
-              <div className="absolute bottom-0 left-0 right-0 h-16 glass border-t border-ui hidden sm:flex items-center px-6 justify-between z-10">
-                <div className="flex gap-8">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80]"></div>
-                    <span className="text-xs font-bold text-gray-300">正常</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-yellow-400 shadow-[0_0_8px_#fbbf24]"></div>
-                    <span className="text-xs font-bold text-gray-300">余裕少</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]"></div>
-                    <span className="text-xs font-bold text-gray-300">遅延懸念</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-4 text-xs text-secondary italic">
-                   ルート案: {plans[activePlanIdx].label}
-                </div>
-              </div>
-            </section>
           </motion.div>
         )}
       </AnimatePresence>

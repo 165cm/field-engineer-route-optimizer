@@ -1,4 +1,4 @@
-import { RoutePlan } from '../types';
+import { RoutePlan, Visit } from '../types';
 import { parseTime, formatTime, PREP_MIN } from '../lib/optimization';
 
 type SegmentKind = 'travel' | 'work' | 'prep' | 'lunch';
@@ -9,9 +9,12 @@ type Segment = {
   startMin: number;
   endMin: number;
   status?: SegmentStatus;
+  label?: string;  // visit identifier (work segments only)
+  visitIndex?: number; // 1-based, for the small badge
 };
 
-const SIZE = 240;
+// Larger SVG box than the inner ring so the outer visit labels have room.
+const SIZE = 300;
 const CENTER = SIZE / 2;
 const RADIUS = 96;
 const STROKE = 18;
@@ -32,9 +35,24 @@ const STATUS_DOT: Record<SegmentStatus, string | null> = {
   violation: '#ef4444',
 };
 
+function shortLabel(visit: Visit | undefined): string {
+  if (!visit) return '';
+  const name = visit.customerName?.trim();
+  if (name) {
+    return name.replace(/(様|さん|殿|邸)$/g, '').slice(0, 5);
+  }
+  const addr = visit.address || '';
+  // Extract the town portion: anything after the last 区/市/町/村 up to the
+  // first street-number digit (ASCII or full-width / kanji numerals).
+  const m = addr.match(/[市区町村]([^0-9０-９一二三四五六七八九十百千]+)/);
+  if (m && m[1]) return m[1].slice(0, 5);
+  return addr.slice(0, 5);
+}
+
 function buildSegments(plan: RoutePlan): Segment[] {
   const segments: Segment[] = [];
   const legs = plan.legs;
+  let visitIdx = 0;
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
     const arrivalMin = parseTime(leg.arrivalTime);
@@ -46,6 +64,9 @@ function buildSegments(plan: RoutePlan): Segment[] {
       status: leg.status,
     });
     if (leg.visitId) {
+      const visit = plan.order[visitIdx];
+      visitIdx++;
+      const label = shortLabel(visit);
       const endMin = parseTime(leg.endTime);
       if (leg.workStartTime && leg.workEndTime) {
         const ws = parseTime(leg.workStartTime);
@@ -53,11 +74,11 @@ function buildSegments(plan: RoutePlan): Segment[] {
         // Prep: the 15min immediately before workStart. Anything earlier
         // (e.g. waiting for a 以降 time window) stays as grey track.
         segments.push({ kind: 'prep', startMin: ws - PREP_MIN, endMin: ws });
-        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status });
+        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status, label, visitIndex: visitIdx });
         segments.push({ kind: 'prep', startMin: we, endMin: endMin });
       } else {
         // Legacy data: no prep/cleanup info, draw the whole site time as work.
-        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status });
+        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status, label, visitIndex: visitIdx });
       }
     }
     const next = legs[i + 1];
@@ -105,6 +126,12 @@ function fmtDur(min: number): string {
   return `${h}h${String(m).padStart(2, '0')}m`;
 }
 
+// 12 hour labels (12, 1, 2, ..., 11) positioned inside the ring.
+const HOUR_LABELS = Array.from({ length: 12 }, (_, i) => ({
+  hour: i === 0 ? 12 : i,
+  angle: i * 30 - 90,
+}));
+
 export function ScheduleClock({ plan }: { plan: RoutePlan }) {
   if (!plan || !plan.legs || plan.legs.length === 0) return null;
 
@@ -118,18 +145,13 @@ export function ScheduleClock({ plan }: { plan: RoutePlan }) {
     .filter(s => s.kind === 'work' || s.kind === 'prep')
     .reduce((sum, s) => sum + (s.endMin - s.startMin), 0);
 
-  const hourLabels = [
-    { hour: 12, angle: -90 },
-    { hour: 3, angle: 0 },
-    { hour: 6, angle: 90 },
-    { hour: 9, angle: 180 },
-  ];
+  const workSegments = segments.filter(s => s.kind === 'work');
 
   return (
     <div className="flex flex-col items-center gap-2 py-2">
       <svg
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        className="w-full max-w-[260px] h-auto"
+        className="w-full max-w-[300px] h-auto"
         role="img"
         aria-label="本日のスケジュール時計"
       >
@@ -195,8 +217,8 @@ export function ScheduleClock({ plan }: { plan: RoutePlan }) {
             />
           );
         })}
-        {/* Hour numbers */}
-        {hourLabels.map(({ hour, angle }) => {
+        {/* Inner hour numbers 1..12 (12 at top, clockwise) */}
+        {HOUR_LABELS.map(({ hour, angle }) => {
           const p = polar(angle, RADIUS - STROKE - 8);
           return (
             <text
@@ -205,12 +227,44 @@ export function ScheduleClock({ plan }: { plan: RoutePlan }) {
               y={p.y}
               textAnchor="middle"
               dominantBaseline="central"
-              fontSize={10}
+              fontSize={8.5}
               fontWeight={700}
               fill="#64748b"
             >
               {hour}
             </text>
+          );
+        })}
+        {/* Outer visit identifier labels (e.g. customer name or town) */}
+        {workSegments.map((seg, idx) => {
+          if (!seg.label) return null;
+          const mid = (seg.startMin + seg.endMin) / 2;
+          const angle = minutesToAngle(mid);
+          const labelP = polar(angle, RADIUS + STROKE / 2 + 14);
+          const tickInner = polar(angle, RADIUS + STROKE / 2);
+          const tickOuter = polar(angle, RADIUS + STROKE / 2 + 4);
+          return (
+            <g key={`lbl-${idx}`}>
+              <line
+                x1={tickInner.x}
+                y1={tickInner.y}
+                x2={tickOuter.x}
+                y2={tickOuter.y}
+                stroke="#94a3b8"
+                strokeWidth={1}
+              />
+              <text
+                x={labelP.x}
+                y={labelP.y}
+                textAnchor="middle"
+                dominantBaseline="central"
+                fontSize={9}
+                fontWeight={700}
+                fill="#e2e8f0"
+              >
+                {seg.visitIndex ? `${seg.visitIndex}.` : ''}{seg.label}
+              </text>
+            </g>
           );
         })}
         {/* Center stack */}
