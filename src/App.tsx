@@ -2048,29 +2048,13 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
   const modeCfg = MAP_MODE_CONFIG[mapMode];
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
 
+  // Draw the route polyline.
   useEffect(() => {
     if (!map || !routesLib || !plan) return;
 
-    // Clear previous
     polylinesRef.current.forEach(p => p.setMap(null));
     polylinesRef.current = [];
 
-    const waypoints = plan.order.map(v => v.coords || v.address).filter(Boolean);
-    const origin = settings.homeCoords || settings.homeAddress;
-    
-    let dest = origin;
-    if (settings.endLocation === 'custom' && settings.customEndAddress) {
-      dest = settings.customEndCoords || settings.customEndAddress;
-    } else if (settings.endLocation === 'none') {
-      dest = plan.order[plan.order.length - 1].coords || plan.order[plan.order.length - 1].address;
-    }
-
-    const intermediate = waypoints.slice(0, settings.endLocation === 'none' ? -1 : undefined);
-
-    // Using traditional DirectionsService because computeRoutes is a bit more complex for multiple stops without a wrapper
-    // Actually, Constitution says NEVER use DirectionsService. I must use Route.computeRoutes.
-    // Routes API (New) supports up to 10 intermediate waypoints.
-    
     const originCoords = settings.homeCoords;
     if (!originCoords) return;
 
@@ -2081,28 +2065,83 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
       destCoords = plan.order[plan.order.length - 1].coords || originCoords;
     }
 
-    const intermediateWaypoints = intermediate.map(w => {
-      const coords = typeof w === 'string' ? null : w;
-      return coords ? { location: coords } : null;
-    }).filter(Boolean) as google.maps.routes.Waypoint[];
+    const intermediate = plan.order
+      .slice(0, settings.endLocation === 'none' ? -1 : undefined)
+      .map(v => (v.coords ? { location: v.coords } : null))
+      .filter(Boolean) as google.maps.routes.Waypoint[];
 
+    let cancelled = false;
     routesLib.Route.computeRoutes({
       origin: { location: originCoords },
       destination: { location: destCoords },
-      intermediates: intermediateWaypoints,
+      intermediates: intermediate,
       travelMode: google.maps.TravelMode.DRIVING,
-      fields: ['path', 'viewport']
+      fields: ['path'],
     }).then(({ routes }) => {
-      if (routes?.[0]) {
-        const polyLines = routes[0].createPolylines();
-        polyLines.forEach(p => p.setMap(map));
-        polylinesRef.current = polyLines;
-        if (routes[0].viewport) map.fitBounds(routes[0].viewport, 40);
-      }
+      if (cancelled) return;
+      const path = routes?.[0]?.path;
+      if (!path || path.length === 0) return;
+      // White halo + colored line for legibility on both light and dark maps.
+      const halo = new google.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: '#ffffff',
+        strokeOpacity: 0.7,
+        strokeWeight: 8,
+        zIndex: 1,
+      });
+      const line = new google.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: '#2563eb',
+        strokeOpacity: 0.95,
+        strokeWeight: 5,
+        zIndex: 2,
+      });
+      halo.setMap(map);
+      line.setMap(map);
+      polylinesRef.current = [halo, line];
     });
 
-    return () => polylinesRef.current.forEach(p => p.setMap(null));
+    return () => {
+      cancelled = true;
+      polylinesRef.current.forEach(p => p.setMap(null));
+      polylinesRef.current = [];
+    };
   }, [map, routesLib, plan, settings]);
+
+  // Fit all pins (home, visits, custom end, lunch candidates) with ~1.3x margin.
+  useEffect(() => {
+    if (!map) return;
+    const points: google.maps.LatLngLiteral[] = [];
+    if (settings.homeCoords) points.push(settings.homeCoords);
+    if (settings.endLocation === 'custom' && settings.customEndCoords) {
+      points.push(settings.customEndCoords);
+    }
+    plan.order.forEach(v => { if (v.coords) points.push(v.coords); });
+    plan.lunchCandidates?.forEach(s => { if (s.location) points.push(s.location); });
+    if (points.length === 0) return;
+
+    const bounds = new google.maps.LatLngBounds();
+    points.forEach(p => bounds.extend(p));
+
+    if (points.length === 1) {
+      map.setCenter(points[0]);
+      map.setZoom(14);
+      return;
+    }
+
+    // 1.3x viewport: 30% wider, 15% on each side.
+    const ne = bounds.getNorthEast();
+    const sw = bounds.getSouthWest();
+    const latPad = Math.max((ne.lat() - sw.lat()) * 0.15, 0.002);
+    const lngPad = Math.max((ne.lng() - sw.lng()) * 0.15, 0.002);
+    const padded = new google.maps.LatLngBounds(
+      { lat: sw.lat() - latPad, lng: sw.lng() - lngPad },
+      { lat: ne.lat() + latPad, lng: ne.lng() + lngPad },
+    );
+    map.fitBounds(padded);
+  }, [map, plan, settings]);
 
   return (
     <div className="w-full h-full relative">
