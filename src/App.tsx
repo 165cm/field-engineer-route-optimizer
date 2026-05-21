@@ -28,7 +28,8 @@ import {
   Hash,
   ChevronRight,
   ClipboardList,
-  Utensils
+  Utensils,
+  Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -39,6 +40,7 @@ import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 import { isDemoMode } from './lib/demoMode';
 import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
+import { ScheduleClock } from './components/ScheduleClock';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -349,6 +351,15 @@ function MainApp() {
   // Map raw errors (network, HTTP, API status strings) to a user-friendly notice.
   const explainError = (e: unknown, fallbackTitle: string): { title: string; detail: string } => {
     const msg = e instanceof Error ? e.message : String(e);
+    if (/Gemini API 403|API_KEY_HTTP_REFERRER_BLOCKED|are blocked/i.test(msg)) {
+      return {
+        title: 'AI解析サービスにアクセスできません',
+        detail: 'Gemini APIキーの参照元(HTTPリファラー)制限によりブロックされました。管理者はGoogle AI Studio / GCPコンソールでこのサイトのURLを許可リストに追加するか、リファラー制限を解除してください。',
+      };
+    }
+    if (/Gemini API (401|400)/i.test(msg)) {
+      return { title: 'AI解析サービスにアクセスできません', detail: 'Gemini APIキーが未設定または無効です。管理者にお問い合わせください。' };
+    }
     if (/429/.test(msg)) {
       return { title: 'API利用上限に達しました', detail: '1時間あたりの利用回数を超えています。少し時間を置いてからお試しください。' };
     }
@@ -630,17 +641,28 @@ function MainApp() {
             if (plan.legs[i].arrivalTime) {
               plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + LUNCH_MIN);
             }
+            if (plan.legs[i].workStartTime) {
+              plan.legs[i].workStartTime = formatTime(parseTime(plan.legs[i].workStartTime!) + LUNCH_MIN);
+            }
+            if (plan.legs[i].workEndTime) {
+              plan.legs[i].workEndTime = formatTime(parseTime(plan.legs[i].workEndTime!) + LUNCH_MIN);
+            }
             if (plan.legs[i].endTime) {
               plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + LUNCH_MIN);
             }
             if (i - 1 < plan.order.length) {
               const visit = plan.order[i - 1];
               if (visit?.timeWindow) {
-                const start = parseTime(visit.timeWindow.start);
-                const end = parseTime(visit.timeWindow.end);
+                const hasStart = !!visit.timeWindow.start;
+                const hasEnd = !!visit.timeWindow.end;
+                const start = hasStart ? parseTime(visit.timeWindow.start) : null;
+                const end = hasEnd ? parseTime(visit.timeWindow.end) : null;
                 const arr = parseTime(plan.legs[i].arrivalTime);
-                if (arr > end) plan.legs[i].status = 'violation';
-                else if (arr > end - 30 || arr < start) plan.legs[i].status = 'warning';
+                if (end !== null && arr > end) plan.legs[i].status = 'violation';
+                else if (
+                  (end !== null && arr > end - 30) ||
+                  (start !== null && arr < start)
+                ) plan.legs[i].status = 'warning';
               }
             }
           }
@@ -1048,6 +1070,11 @@ function MainApp() {
                 ))}
               </div>
 
+              {/* Schedule Clock */}
+              <div className="px-4 pt-4 pb-3 border-b border-ui">
+                <ScheduleClock plan={plans[activePlanIdx]} />
+              </div>
+
               {/* Path List */}
               <div className="flex-1 lg:overflow-y-auto p-4 space-y-3 custom-scrollbar lg:min-h-0">
                 {plans[activePlanIdx].legs.map((leg, idx) => {
@@ -1118,12 +1145,20 @@ function MainApp() {
                               "font-bold",
                               leg.status === 'ok' ? "text-green-400" : leg.status === 'warning' ? "text-yellow-400" : "text-red-400"
                             )}>
-                              {plans[activePlanIdx].order[idx].timeWindow ? `${plans[activePlanIdx].order[idx].timeWindow?.start}-${plans[activePlanIdx].order[idx].timeWindow?.end}` : "指定なし"}
+                              {(() => {
+                                const tw = plans[activePlanIdx].order[idx].timeWindow;
+                                if (!tw) return "指定なし";
+                                if (tw.start && tw.end) return `${tw.start}-${tw.end}`;
+                                if (tw.start) return `${tw.start} 以降`;
+                                if (tw.end) return `${tw.end} 以前`;
+                                return "指定なし";
+                              })()}
                             </span>
                           </div>
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
                             <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">滞在 / 完了</span>
-                            <span className="font-bold">{plans[activePlanIdx].order[idx].workMinutes}分 → {leg.endTime}</span>
+                            <span className="font-bold">{plans[activePlanIdx].order[idx].workMinutes + 30}分 → {leg.endTime}</span>
+                            <span className="block text-[9px] text-secondary font-medium mt-0.5">準備15+作業{plans[activePlanIdx].order[idx].workMinutes}+撤収15</span>
                           </div>
                         </div>
                       </motion.div>
@@ -1985,9 +2020,32 @@ function SpeechInput({ onText }: { onText: (t: string) => void }) {
   );
 }
 
+type MapMode = 'admin' | 'standard' | 'satellite';
+
+const MAP_MODE_STORAGE_KEY = 'repair_map_mode';
+
+const MAP_MODE_CONFIG: Record<MapMode, { mapTypeId: string; colorScheme: 'DARK' | 'LIGHT'; label: string }> = {
+  admin:     { mapTypeId: 'roadmap', colorScheme: 'LIGHT', label: '行政区域' },
+  standard:  { mapTypeId: 'roadmap', colorScheme: 'DARK',  label: '標準' },
+  satellite: { mapTypeId: 'hybrid',  colorScheme: 'DARK',  label: '航空写真' },
+};
+
 function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, settings: Settings, selectedLunchIdx: number | undefined }) {
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
+  const [mapMode, setMapMode] = useState<MapMode>(() => {
+    try {
+      const saved = localStorage.getItem(MAP_MODE_STORAGE_KEY);
+      if (saved === 'admin' || saved === 'standard' || saved === 'satellite') return saved;
+    } catch {}
+    return 'admin';
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(MAP_MODE_STORAGE_KEY, mapMode); } catch {}
+  }, [mapMode]);
+
+  const modeCfg = MAP_MODE_CONFIG[mapMode];
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
 
   useEffect(() => {
@@ -2047,12 +2105,14 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
   }, [map, routesLib, plan, settings]);
 
   return (
-    <div className="w-full h-full">
+    <div className="w-full h-full relative">
       <Map
+        key={modeCfg.colorScheme}
         defaultZoom={12}
         defaultCenter={settings.homeCoords || { lat: 35.6895, lng: 139.6917 }}
         mapId="DEMO_MAP_ID"
-        colorScheme="DARK"
+        mapTypeId={modeCfg.mapTypeId}
+        colorScheme={modeCfg.colorScheme}
         disableDefaultUI
         internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
         className="w-full h-full"
@@ -2083,6 +2143,27 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
           );
         })}
       </Map>
+      {/* Map mode toggle */}
+      <div className="absolute top-3 right-3 z-10 flex items-center bg-slate-900/85 backdrop-blur-sm border border-ui rounded-lg overflow-hidden shadow-xl">
+        <div className="px-2 py-1.5 text-secondary border-r border-ui">
+          <Layers className="w-3.5 h-3.5" />
+        </div>
+        {(Object.keys(MAP_MODE_CONFIG) as MapMode[]).map((m, i) => (
+          <button
+            key={m}
+            onClick={() => setMapMode(m)}
+            className={cn(
+              'px-2.5 py-1.5 text-[11px] font-bold transition-colors',
+              i > 0 && 'border-l border-ui',
+              mapMode === m
+                ? 'bg-blue-600 text-white'
+                : 'bg-transparent text-secondary hover:bg-slate-800'
+            )}
+          >
+            {MAP_MODE_CONFIG[m].label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

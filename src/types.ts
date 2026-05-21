@@ -23,6 +23,8 @@ export type Leg = {
   durationMin: number;
   distanceKm: number;
   arrivalTime: string; // "HH:mm"
+  workStartTime?: string; // "HH:mm" — after 15min prep, only set on visit legs
+  workEndTime?: string;   // "HH:mm" — before 15min cleanup, only set on visit legs
   endTime: string;     // "HH:mm"
   status: 'ok' | 'warning' | 'violation';
   visitId?: string; // null for start/end points

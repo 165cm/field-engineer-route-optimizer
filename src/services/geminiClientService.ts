@@ -75,10 +75,13 @@ async function callGemini(parts: any[]): Promise<ParsedVisit[]> {
   if (!GEMINI_API_KEY) {
     throw new Error('Gemini API key is not configured (GEMINI_API_KEY secret)');
   }
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': GEMINI_API_KEY,
+    },
     body: JSON.stringify({
       contents: [{ parts }],
       generationConfig: {

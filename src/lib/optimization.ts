@@ -1,16 +1,19 @@
 import { Visit, RoutePlan, Settings, Leg } from "../types";
 import type { DistanceMatrixLike } from "../services/googleMapsService";
 
-function parseTime(timeStr: string): number {
+export function parseTime(timeStr: string): number {
   const [h, m] = timeStr.split(":").map(Number);
   return h * 60 + m;
 }
 
-function formatTime(minutes: number): string {
+export function formatTime(minutes: number): string {
   const h = Math.floor(minutes / 60) % 24;
   const m = minutes % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
+
+export const PREP_MIN = 15;
+export const CLEANUP_MIN = 15;
 
 export type Baseline = {
   totalDurationMin: number;
@@ -106,20 +109,36 @@ export function optimizeRoutes(
 
       currentMinutes += travelTime;
       const arrivalTime = formatTime(currentMinutes);
-      
-      // Check time window
+
+      // Time window: start/end may each be empty string when only one side
+      // is specified (以前 = end only, 以降 = start only).
       let status: 'ok' | 'warning' | 'violation' = 'ok';
       if (visit.timeWindow) {
-        const start = parseTime(visit.timeWindow.start);
-        const end = parseTime(visit.timeWindow.end);
-        if (currentMinutes > end) {
+        const hasStart = !!visit.timeWindow.start;
+        const hasEnd = !!visit.timeWindow.end;
+        const start = hasStart ? parseTime(visit.timeWindow.start) : null;
+        const end = hasEnd ? parseTime(visit.timeWindow.end) : null;
+        if (end !== null && currentMinutes > end) {
           status = 'violation';
-        } else if (currentMinutes > end - 30 || currentMinutes < start) {
+        } else if (
+          (end !== null && currentMinutes > end - 30) ||
+          (start !== null && currentMinutes < start)
+        ) {
           status = 'warning';
+        }
+        // 以降 (start only) means we should not start work before `start`.
+        // Wait at the site instead of arriving early.
+        if (start !== null && currentMinutes < start) {
+          currentMinutes = start;
         }
       }
 
+      // 15min prep → work → 15min cleanup
+      currentMinutes += PREP_MIN;
+      const workStartTime = formatTime(currentMinutes);
       currentMinutes += visit.workMinutes;
+      const workEndTime = formatTime(currentMinutes);
+      currentMinutes += CLEANUP_MIN;
       const endTime = formatTime(currentMinutes);
 
       legs.push({
@@ -128,6 +147,8 @@ export function optimizeRoutes(
         durationMin: travelTime,
         distanceKm: travelDist,
         arrivalTime,
+        workStartTime,
+        workEndTime,
         endTime,
         status,
         visitId: visit.id
@@ -192,13 +213,25 @@ export function optimizeRoutes(
     // A Score: Total Distance (or Time)
     const scoreA = plan.totalDurationMin + penalty;
 
-    // B Score: Time Window Centering
+    // B Score: Time Window Centering.
+    // For one-sided windows, "center" is the single bound itself so we still
+    // get a meaningful gradient toward respecting the constraint.
     let centeringDiff = 0;
     plan.order.forEach((v, i) => {
       const arrival = parseTime(plan.legs[i].arrivalTime);
       if (v.timeWindow) {
-        const center = (parseTime(v.timeWindow.start) + parseTime(v.timeWindow.end)) / 2;
-        centeringDiff += Math.abs(arrival - center);
+        const hasStart = !!v.timeWindow.start;
+        const hasEnd = !!v.timeWindow.end;
+        if (hasStart && hasEnd) {
+          const center = (parseTime(v.timeWindow.start) + parseTime(v.timeWindow.end)) / 2;
+          centeringDiff += Math.abs(arrival - center);
+        } else if (hasEnd) {
+          const end = parseTime(v.timeWindow.end);
+          centeringDiff += Math.max(0, arrival - end);
+        } else if (hasStart) {
+          const start = parseTime(v.timeWindow.start);
+          centeringDiff += Math.max(0, start - arrival);
+        }
       }
     });
     const scoreB = plan.totalDurationMin * 0.3 + centeringDiff + penalty;
