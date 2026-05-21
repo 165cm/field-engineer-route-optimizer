@@ -171,7 +171,7 @@ export default function App() {
   }
 
   return (
-    <APIProvider apiKey={API_KEY} version="weekly" language="ja" libraries={['places']}>
+    <APIProvider apiKey={API_KEY} version="weekly" language="ja" libraries={['places', 'routes', 'geometry']}>
       <MainApp />
     </APIProvider>
   );
@@ -2203,7 +2203,7 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
 
   // Draw the route polyline.
   useEffect(() => {
-    if (!map || !routesLib || !plan) return;
+    if (!map || !plan) return;
 
     polylinesRef.current.forEach(p => p.setMap(null));
     polylinesRef.current = [];
@@ -2218,25 +2218,16 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
       destCoords = plan.order[plan.order.length - 1].coords || originCoords;
     }
 
-    const intermediate = plan.order
-      .slice(0, settings.endLocation === 'none' ? -1 : undefined)
-      .map(v => (v.coords ? { location: v.coords } : null))
-      .filter(Boolean) as google.maps.routes.Waypoint[];
+    // Build the ordered list of pin coordinates we want to connect.
+    const orderedCoords: google.maps.LatLngLiteral[] = [originCoords];
+    const visitsForRoute = plan.order.slice(
+      0,
+      settings.endLocation === 'none' ? -1 : undefined
+    );
+    visitsForRoute.forEach(v => { if (v.coords) orderedCoords.push(v.coords); });
+    if (settings.endLocation !== 'none') orderedCoords.push(destCoords);
 
-    let cancelled = false;
-    routesLib.Route.computeRoutes({
-      origin: { location: originCoords },
-      destination: { location: destCoords },
-      intermediates: intermediate,
-      travelMode: google.maps.TravelMode.DRIVING,
-      fields: ['path'],
-    }).then(({ routes }) => {
-      if (cancelled) return;
-      const path = routes?.[0]?.path;
-      if (!path || path.length === 0) {
-        console.warn('Route path is empty', routes);
-        return;
-      }
+    const renderPolyline = (path: google.maps.LatLngLiteral[] | google.maps.LatLng[], isFallback: boolean) => {
       // White halo underneath for legibility on dark/satellite/light maps.
       const halo = new google.maps.Polyline({
         path,
@@ -2264,16 +2255,66 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
         path,
         geodesic: true,
         strokeColor: '#1d4ed8',
-        strokeOpacity: 1,
+        strokeOpacity: isFallback ? 0.85 : 1,
         strokeWeight: 6,
         zIndex: 2,
         icons: [arrow],
+        ...(isFallback ? { } : {}),
       });
       halo.setMap(map);
       line.setMap(map);
-      polylinesRef.current = [halo, line];
+      polylinesRef.current.push(halo, line);
+    };
+
+    // Immediate fallback: draw straight segments through pins so the user
+    // always sees direction & sequence even if Routes API is slow / fails.
+    if (orderedCoords.length >= 2) {
+      renderPolyline(orderedCoords, true);
+    }
+
+    if (!routesLib) return;
+
+    const intermediate = visitsForRoute
+      .map(v => (v.coords ? { location: v.coords } : null))
+      .filter(Boolean) as google.maps.routes.Waypoint[];
+
+    let cancelled = false;
+    routesLib.Route.computeRoutes({
+      origin: { location: originCoords },
+      destination: { location: destCoords },
+      intermediates: intermediate,
+      travelMode: google.maps.TravelMode.DRIVING,
+      fields: ['path', 'legs.steps.polyline', 'polyline'],
+    }).then(({ routes }) => {
+      if (cancelled) return;
+      const route = routes?.[0];
+      // Try several places the path may live, depending on Maps JS version.
+      let path: google.maps.LatLng[] | undefined =
+        (route as any)?.path ||
+        (route as any)?.polyline?.geometry?.path ||
+        (() => {
+          // Fall back to concatenating leg.steps polylines.
+          const legs = (route as any)?.legs as any[] | undefined;
+          if (!legs?.length) return undefined;
+          const all: google.maps.LatLng[] = [];
+          legs.forEach(l => {
+            l.steps?.forEach((s: any) => {
+              const stepPath = s.polyline?.geometry?.path || s.path;
+              if (stepPath) all.push(...stepPath);
+            });
+          });
+          return all.length ? all : undefined;
+        })();
+      if (!path || path.length === 0) {
+        console.warn('Routes API returned no path; keeping straight-line fallback', route);
+        return;
+      }
+      // Upgrade: remove the straight-line fallback and draw the real path.
+      polylinesRef.current.forEach(p => p.setMap(null));
+      polylinesRef.current = [];
+      renderPolyline(path, false);
     }).catch(err => {
-      console.error('Route computation failed', err);
+      console.error('Route computation failed; keeping straight-line fallback', err);
     });
 
     return () => {
