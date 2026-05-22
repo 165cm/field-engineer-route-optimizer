@@ -1,6 +1,6 @@
-import { RoutePlan, Visit, TaskType } from '../types';
+import { RoutePlan, Visit, TaskType, Difficulty } from '../types';
 import { parseTime, formatTime, PREP_MIN } from '../lib/optimization';
-import { visitColor } from '../lib/visitColors';
+import { difficultyColor, DIFFICULTY_LABEL } from '../lib/visitColors';
 
 type SegmentKind = 'travel' | 'work' | 'prep' | 'lunch';
 type SegmentStatus = 'ok' | 'warning' | 'violation';
@@ -12,6 +12,7 @@ type Segment = {
   status?: SegmentStatus;
   label?: string;  // visit identifier (work segments only)
   visitIndex?: number; // 1-based, for the small badge
+  difficulty?: Difficulty; // drives the per-visit color for work/prep arcs
 };
 
 // Larger SVG box than the inner ring so the outer visit labels have room.
@@ -71,18 +72,19 @@ function buildSegments(plan: RoutePlan, tasks?: TaskType[]): Segment[] {
       const visit = plan.order[visitIdx];
       visitIdx++;
       const label = shortLabel(visit, tasks);
+      const difficulty = visit?.difficulty;
       const endMin = parseTime(leg.endTime);
       if (leg.workStartTime && leg.workEndTime) {
         const ws = parseTime(leg.workStartTime);
         const we = parseTime(leg.workEndTime);
-        // Prep / cleanup arcs share the visit's identity color (lighter shade)
-        // so the whole on-site block reads as one coloured group.
-        segments.push({ kind: 'prep', startMin: ws - PREP_MIN, endMin: ws, visitIndex: visitIdx });
-        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status, label, visitIndex: visitIdx });
-        segments.push({ kind: 'prep', startMin: we, endMin: endMin, visitIndex: visitIdx });
+        // Prep / cleanup arcs share the visit's difficulty color (lighter
+        // shade) so the whole on-site block reads as one coloured group.
+        segments.push({ kind: 'prep', startMin: ws - PREP_MIN, endMin: ws, visitIndex: visitIdx, difficulty });
+        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status, label, visitIndex: visitIdx, difficulty });
+        segments.push({ kind: 'prep', startMin: we, endMin: endMin, visitIndex: visitIdx, difficulty });
       } else {
         // Legacy data: no prep/cleanup info, draw the whole site time as work.
-        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status, label, visitIndex: visitIdx });
+        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status, label, visitIndex: visitIdx, difficulty });
       }
     }
     const next = legs[i + 1];
@@ -186,15 +188,16 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             />
           );
         })}
-        {/* Segments. Work / prep arcs use the per-visit identity color so
-            they visually match the leg cards and map markers; travel /
-            lunch / idle keep their semantic colors. */}
+        {/* Segments. Work / prep arcs use the visit's difficulty color so
+            you can see workload distribution at a glance — same coloring
+            shows up on the leg cards and the map markers. Travel / lunch /
+            idle keep their semantic colors. */}
         {segments.map((seg, idx) => {
           const d = arcPath(seg.startMin, seg.endMin);
           if (!d) return null;
           let stroke = COLORS[seg.kind];
-          if (seg.visitIndex) {
-            const c = visitColor(seg.visitIndex);
+          if (seg.difficulty) {
+            const c = difficultyColor(seg.difficulty);
             if (seg.kind === 'work') stroke = c.work;
             else if (seg.kind === 'prep') stroke = c.prep;
           }
@@ -247,8 +250,8 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             </text>
           );
         })}
-        {/* Outer visit identifier labels — tick in the visit color so the
-            arc, the tick, the card, and the map marker all read as a set. */}
+        {/* Outer visit identifier labels — tick uses the difficulty color so
+            the arc, the tick, the card, and the map marker all read as a set. */}
         {workSegments.map((seg, idx) => {
           if (!seg.label || !seg.visitIndex) return null;
           const mid = (seg.startMin + seg.endMin) / 2;
@@ -256,7 +259,7 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           const labelP = polar(angle, RADIUS + STROKE / 2 + 14);
           const tickInner = polar(angle, RADIUS + STROKE / 2);
           const tickOuter = polar(angle, RADIUS + STROKE / 2 + 5);
-          const color = visitColor(seg.visitIndex).work;
+          const color = difficultyColor(seg.difficulty).work;
           return (
             <g key={`lbl-${idx}`}>
               <line
@@ -295,24 +298,27 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           〜 {plan.endTime}
         </text>
       </svg>
-      {/* Per-visit mini-legend — doubles as a key linking each clock arc to
-          its matching leg card and map marker. */}
-      <div className="flex items-center justify-center gap-x-2.5 gap-y-1 flex-wrap text-[10px] font-bold">
-        {workSegments.map(s => {
-          if (!s.visitIndex || !s.label) return null;
-          const color = visitColor(s.visitIndex).work;
-          return (
-            <span key={`vk-${s.visitIndex}`} className="flex items-center gap-1.5">
+      {/* Difficulty legend — only show levels actually present in the plan
+          so the key stays minimal. Pairs visually with the leg cards and
+          map markers, which share the same colors. */}
+      <div className="flex items-center justify-center gap-1.5 flex-wrap text-[10px] font-bold">
+        {([1, 2, 3] as Difficulty[])
+          .filter(d => workSegments.some(s => s.difficulty === d))
+          .map(d => {
+            const c = difficultyColor(d).work;
+            return (
               <span
-                className="inline-block w-2.5 h-2.5 rounded-sm"
-                style={{ background: color }}
-              />
-              <span className="text-gray-200">{s.visitIndex}.{s.label}</span>
-            </span>
-          );
-        })}
+                key={`dk-${d}`}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-full border"
+                style={{ background: `${c}26`, borderColor: `${c}66`, color: c }}
+              >
+                <span className="w-2 h-2 rounded-full" style={{ background: c }} />
+                {DIFFICULTY_LABEL[d]}
+              </span>
+            );
+          })}
       </div>
-      {/* Category legend (the things that aren't per-visit) */}
+      {/* Category legend (the things that aren't difficulty-coloured) */}
       <div className="flex items-center justify-center gap-1.5 flex-wrap text-[10px] font-bold opacity-80">
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">
           <span className="w-2 h-2 rounded-full bg-blue-500" /> 移動

@@ -44,7 +44,7 @@ import { isDemoMode } from './lib/demoMode';
 import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 import { ScheduleClock } from './components/ScheduleClock';
-import { visitColor } from './lib/visitColors';
+import { difficultyColor } from './lib/visitColors';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -1198,18 +1198,18 @@ function MainApp() {
                           leg.status === 'violation' ? "border-red-500/30" : "border-ui"
                         )}
                       >
-                        {/* Visit identity stripe — same color as the matching
+                        {/* Difficulty stripe — same color as the matching
                             clock arc and map marker for fast cross-reference. */}
                         <div
                           className="absolute left-0 top-0 w-1 h-full"
-                          style={{ background: visitColor(idx + 1).work }}
+                          style={{ background: difficultyColor(visit.difficulty).work }}
                         />
 
                         <div className="flex justify-between items-start mb-2">
                           <div className="flex items-center gap-2">
                              <div
                                className="px-2 py-0.5 rounded text-[10px] font-bold num-font text-white"
-                               style={{ background: visitColor(idx + 1).work }}
+                               style={{ background: difficultyColor(visit.difficulty).work }}
                              >
                                {idx + 1}番 {leg.arrivalTime}着
                              </div>
@@ -2463,7 +2463,7 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
             <AdvancedMarker key={v.id} position={v.coords}>
                <div
                  className="text-white w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg"
-                 style={{ background: visitColor(i + 1).work }}
+                 style={{ background: difficultyColor(v.difficulty).work }}
                >
                  {i + 1}
                </div>
