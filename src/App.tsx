@@ -1095,7 +1095,7 @@ function MainApp() {
 
               {/* Schedule Clock */}
               <div className="px-4 pt-4 pb-3 border-b border-ui">
-                <ScheduleClock plan={plans[activePlanIdx]} />
+                <ScheduleClock plan={plans[activePlanIdx]} tasks={settings.tasks} />
               </div>
 
               {/* Map (positioned directly under the schedule clock) */}

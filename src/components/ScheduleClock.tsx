@@ -1,4 +1,4 @@
-import { RoutePlan, Visit } from '../types';
+import { RoutePlan, Visit, TaskType } from '../types';
 import { parseTime, formatTime, PREP_MIN } from '../lib/optimization';
 
 type SegmentKind = 'travel' | 'work' | 'prep' | 'lunch';
@@ -36,23 +36,23 @@ const STATUS_DOT: Record<SegmentStatus, string | null> = {
 };
 
 // Build a privacy-safe label for a visit. Customer names are intentionally
-// NEVER used (they're considered personal info). Today this returns just the
-// town extracted from the address, e.g. "東京都新宿区西新宿2-8-1" → "西新宿".
-// Future: append a short task / memo suffix → "西新宿/基盤交換".
-function shortLabel(visit: Visit | undefined): string {
+// NEVER used (they're considered personal info). Returns the town extracted
+// from the address (e.g. "東京都新宿区西新宿2-8-1" → "西新宿"), optionally
+// suffixed with the chosen task name when the user picked one — e.g.
+// "西新宿/修理".
+function shortLabel(visit: Visit | undefined, tasks?: TaskType[]): string {
   if (!visit) return '';
   const addr = visit.address || '';
-  // Extract the town portion: anything after the last 区/市/町/村 up to the
-  // first street-number digit (ASCII or full-width / kanji numerals).
   const m = addr.match(/[市区町村]([^0-9０-９一二三四五六七八九十百千]+)/);
   const town = m && m[1] ? m[1].slice(0, 6) : addr.slice(0, 6);
-  // Placeholder for the future "/task" suffix — keeping the join logic here
-  // so adding a task lookup later is a one-line change:
-  // return task ? `${town}/${task.slice(0, 5)}` : town;
+  const task = visit.taskId && tasks ? tasks.find(t => t.id === visit.taskId) : null;
+  if (task?.name) {
+    return `${town}/${task.name.slice(0, 5)}`;
+  }
   return town;
 }
 
-function buildSegments(plan: RoutePlan): Segment[] {
+function buildSegments(plan: RoutePlan, tasks?: TaskType[]): Segment[] {
   const segments: Segment[] = [];
   const legs = plan.legs;
   let visitIdx = 0;
@@ -69,7 +69,7 @@ function buildSegments(plan: RoutePlan): Segment[] {
     if (leg.visitId) {
       const visit = plan.order[visitIdx];
       visitIdx++;
-      const label = shortLabel(visit);
+      const label = shortLabel(visit, tasks);
       const endMin = parseTime(leg.endTime);
       if (leg.workStartTime && leg.workEndTime) {
         const ws = parseTime(leg.workStartTime);
@@ -135,10 +135,10 @@ const HOUR_LABELS = Array.from({ length: 12 }, (_, i) => ({
   angle: i * 30 - 90,
 }));
 
-export function ScheduleClock({ plan }: { plan: RoutePlan }) {
+export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskType[] }) {
   if (!plan || !plan.legs || plan.legs.length === 0) return null;
 
-  const segments = buildSegments(plan);
+  const segments = buildSegments(plan, tasks);
   if (segments.length === 0) return null;
 
   const totalTravel = segments
