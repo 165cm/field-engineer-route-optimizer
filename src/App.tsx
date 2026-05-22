@@ -29,13 +29,16 @@ import {
   ChevronRight,
   ClipboardList,
   Utensils,
-  Layers
+  Layers,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo } from './types';
 import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
-import { optimizeRoutes, computeInputOrderBaseline, Baseline } from './lib/optimization';
+import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
+import type { DistanceMatrixLike } from './services/googleMapsService';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 import { isDemoMode } from './lib/demoMode';
 import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
@@ -226,6 +229,14 @@ function MainApp() {
   });
 
   const [plans, setPlans] = useState<RoutePlan[]>([]);
+  // Context needed to recompute the custom plan when the user reorders visits.
+  const optContextRef = useRef<{
+    visits: Visit[];
+    settings: Settings;
+    matrix: DistanceMatrixLike;
+  } | null>(null);
+  // Visit IDs in the user-chosen order for the "カスタム" plan.
+  const [customOrder, setCustomOrder] = useState<string[]>([]);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
   const toggleCompleted = (id: string) => {
@@ -237,6 +248,29 @@ function MainApp() {
   };
   const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
   const [activePlanIdx, setActivePlanIdx] = useState(0);
+
+  // Recompute the custom plan when its order changes. Falls back to a no-op
+  // if optimization context hasn't been captured yet.
+  const recomputeCustomPlan = (nextOrder: string[]) => {
+    const ctx = optContextRef.current;
+    if (!ctx) return;
+    const orderIndices = nextOrder
+      .map(id => ctx.visits.findIndex(v => v.id === id) + 1)
+      .filter(i => i > 0);
+    const next = calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X');
+    setPlans(prev => prev.map((p, i) => (i === 3 ? next : p)));
+  };
+
+  const moveCustomVisit = (visitId: string, direction: -1 | 1) => {
+    const idx = customOrder.indexOf(visitId);
+    if (idx < 0) return;
+    const swapWith = idx + direction;
+    if (swapWith < 0 || swapWith >= customOrder.length) return;
+    const next = customOrder.slice();
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    setCustomOrder(next);
+    recomputeCustomPlan(next);
+  };
   const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [showLunchSettings, setShowLunchSettings] = useState(false);
@@ -575,6 +609,22 @@ function MainApp() {
 
       // 3. Optimize + compute baseline (input order) for savings display
       const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      // Seed the manual ("カスタム") plan with the best automatic order so the
+      // user has a sensible starting point to nudge from.
+      const customSeed = optimizedPlans[0].order.map(v => v.id);
+      const customPlan = calculatePlanForOrder(
+        updatedVisits,
+        updatedSettings,
+        matrix,
+        customSeed
+          .map(id => updatedVisits.findIndex(v => v.id === id) + 1)
+          .filter(i => i > 0),
+        'X',
+      );
+      optimizedPlans.push(customPlan);
+      // Persist context for later re-computation when the user reorders.
+      optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
+      setCustomOrder(customSeed);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
 
@@ -1088,7 +1138,7 @@ function MainApp() {
                       activePlanIdx === idx ? "bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40" : "bg-slate-800 border-ui text-secondary hover:bg-slate-700"
                     )}
                   >
-                    案{plan.id}: {plan.id === 'A' ? '最短' : plan.id === 'B' ? '余裕' : '確実'}
+                    {plan.label}
                   </button>
                 ))}
               </div>
@@ -1148,6 +1198,26 @@ function MainApp() {
                              )} />
                           </div>
                           <div className="flex gap-1">
+                            {plans[activePlanIdx].id === 'X' && (
+                              <>
+                                <button
+                                  onClick={() => moveCustomVisit(visit.id, -1)}
+                                  disabled={customOrder.indexOf(visit.id) <= 0}
+                                  title="上に移動"
+                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
+                                >
+                                  <ArrowUp className="w-4 h-4 text-blue-400" />
+                                </button>
+                                <button
+                                  onClick={() => moveCustomVisit(visit.id, 1)}
+                                  disabled={customOrder.indexOf(visit.id) >= customOrder.length - 1}
+                                  title="下に移動"
+                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
+                                >
+                                  <ArrowDown className="w-4 h-4 text-blue-400" />
+                                </button>
+                              </>
+                            )}
                             <button
                               onClick={() => toggleCompleted(visit.id)}
                               title={isCompleted ? '完了を取り消す' : '完了にする'}

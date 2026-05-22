@@ -65,7 +65,7 @@ export type LunchInfo = {
 };
 
 export type RoutePlan = {
-  id: 'A' | 'B' | 'C';
+  id: 'A' | 'B' | 'C' | 'X';
   label: string;
   order: Visit[];
   legs: Leg[];

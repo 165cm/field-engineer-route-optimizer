@@ -53,28 +53,133 @@ export function computeInputOrderBaseline(
   return { totalDurationMin: totalDuration, totalDistanceKm: totalDistance };
 }
 
+export type PlanId = 'A' | 'B' | 'C' | 'X';
+
+const PLAN_LABELS: Record<PlanId, string> = {
+  A: '最短',
+  B: '余裕',
+  C: '確実',
+  X: 'カスタム',
+};
+
+/**
+ * Compute a full RoutePlan (legs, totals, end-of-day time) for a given visit
+ * ordering. Exposed so the App can rebuild a "custom" plan when the user
+ * manually reorders visits without re-running the full optimization.
+ *
+ * `orderIndices` is 1-based positions into `visits` (matching the matrix's
+ * 1..N visit columns; index 0 is the home/start point).
+ */
+export function calculatePlanForOrder(
+  visits: Visit[],
+  settings: Settings,
+  matrix: DistanceMatrixLike,
+  orderIndices: number[],
+  planId: PlanId
+): RoutePlan {
+  const visitCount = visits.length;
+  const startMinutes = settings.startTime ? parseTime(settings.startTime) : 9 * 60;
+  let currentMinutes = startMinutes;
+  let totalDuration = 0;
+  let totalDistance = 0;
+  const legs: Leg[] = [];
+  const orderedVisits: Visit[] = [];
+
+  let prevIdx = 0;
+  for (const currIdx of orderIndices) {
+    const visit = visits[currIdx - 1];
+    const distData = matrix.rows[prevIdx].elements[currIdx];
+    const travelTime = Math.ceil((distData.duration?.value || 0) / 60);
+    const travelDist = (distData.distance?.value || 0) / 1000;
+
+    currentMinutes += travelTime;
+    const arrivalTime = formatTime(currentMinutes);
+
+    let status: 'ok' | 'warning' | 'violation' = 'ok';
+    if (visit.timeWindow) {
+      const hasStart = !!visit.timeWindow.start;
+      const hasEnd = !!visit.timeWindow.end;
+      const start = hasStart ? parseTime(visit.timeWindow.start) : null;
+      const end = hasEnd ? parseTime(visit.timeWindow.end) : null;
+      if (end !== null && currentMinutes > end) {
+        status = 'violation';
+      } else if (
+        (end !== null && currentMinutes > end - 30) ||
+        (start !== null && currentMinutes < start)
+      ) {
+        status = 'warning';
+      }
+      if (start !== null && currentMinutes < start) {
+        currentMinutes = start;
+      }
+    }
+
+    currentMinutes += PREP_MIN;
+    const workStartTime = formatTime(currentMinutes);
+    currentMinutes += visit.workMinutes;
+    const workEndTime = formatTime(currentMinutes);
+    currentMinutes += CLEANUP_MIN;
+    const endTime = formatTime(currentMinutes);
+
+    legs.push({
+      fromName: prevIdx === 0 ? '起点' : visits[prevIdx - 1].address,
+      toName: visit.address,
+      durationMin: travelTime,
+      distanceKm: travelDist,
+      arrivalTime,
+      workStartTime,
+      workEndTime,
+      endTime,
+      status,
+      visitId: visit.id,
+    });
+
+    totalDuration += travelTime;
+    totalDistance += travelDist;
+    orderedVisits.push(visit);
+    prevIdx = currIdx;
+  }
+
+  // Final leg back to home / custom end.
+  let endIdx = prevIdx;
+  if (settings.endLocation === 'home') endIdx = 0;
+  else if (settings.endLocation === 'custom') endIdx = visitCount + 1;
+
+  if (settings.endLocation !== 'none' && orderIndices.length > 0) {
+    const distData = matrix.rows[prevIdx].elements[endIdx];
+    const travelTime = Math.ceil((distData.duration?.value || 0) / 60);
+    const travelDist = (distData.distance?.value || 0) / 1000;
+    currentMinutes += travelTime;
+    totalDuration += travelTime;
+    totalDistance += travelDist;
+    legs.push({
+      fromName: visits[prevIdx - 1].address,
+      toName: '終点',
+      durationMin: travelTime,
+      distanceKm: travelDist,
+      arrivalTime: formatTime(currentMinutes - travelTime),
+      endTime: formatTime(currentMinutes),
+      status: 'ok',
+    });
+  }
+
+  return {
+    id: planId,
+    label: PLAN_LABELS[planId],
+    order: orderedVisits,
+    legs,
+    totalDurationMin: totalDuration,
+    totalDistanceKm: totalDistance,
+    endTime: formatTime(currentMinutes),
+  };
+}
+
 export function optimizeRoutes(
   visits: Visit[],
   settings: Settings,
   matrix: DistanceMatrixLike
 ): RoutePlan[] {
-  // Start point is always at index 0 in matrix origins
-  // Visits are 1 to N
-  // Optional end point if custom
   const visitCount = visits.length;
-  
-  // Create mapping for lookups
-  // 0: Start
-  // 1..N: Visits
-  // N+1: Custom End (if any)
-  
-  const points: (string | google.maps.LatLngLiteral)[] = [
-    settings.homeCoords || settings.homeAddress,
-    ...visits.map(v => v.coords || v.address)
-  ];
-  if (settings.endLocation === 'custom' && settings.customEndAddress) {
-    points.push(settings.customEndCoords || settings.customEndAddress);
-  }
 
   // Generate all permutations of indices [1...N]
   const permutations: number[][] = [];
@@ -91,131 +196,15 @@ export function optimizeRoutes(
   }
   generatePermutations(Array.from({ length: visitCount }, (_, i) => i + 1));
 
-  const startMinutes = settings.startTime ? parseTime(settings.startTime) : 9 * 60;
-
-  function calculatePlan(orderIndices: number[], planId: 'A' | 'B' | 'C'): RoutePlan {
-    let currentMinutes = startMinutes;
-    let totalDuration = 0;
-    let totalDistance = 0;
-    const legs: Leg[] = [];
-    const orderedVisits: Visit[] = [];
-
-    let prevIdx = 0; // Start
-    for (const currIdx of orderIndices) {
-      const visit = visits[currIdx - 1];
-      const distData = matrix.rows[prevIdx].elements[currIdx];
-      const travelTime = Math.ceil((distData.duration?.value || 0) / 60);
-      const travelDist = (distData.distance?.value || 0) / 1000;
-
-      currentMinutes += travelTime;
-      const arrivalTime = formatTime(currentMinutes);
-
-      // Time window: start/end may each be empty string when only one side
-      // is specified (以前 = end only, 以降 = start only).
-      let status: 'ok' | 'warning' | 'violation' = 'ok';
-      if (visit.timeWindow) {
-        const hasStart = !!visit.timeWindow.start;
-        const hasEnd = !!visit.timeWindow.end;
-        const start = hasStart ? parseTime(visit.timeWindow.start) : null;
-        const end = hasEnd ? parseTime(visit.timeWindow.end) : null;
-        if (end !== null && currentMinutes > end) {
-          status = 'violation';
-        } else if (
-          (end !== null && currentMinutes > end - 30) ||
-          (start !== null && currentMinutes < start)
-        ) {
-          status = 'warning';
-        }
-        // 以降 (start only) means we should not start work before `start`.
-        // Wait at the site instead of arriving early.
-        if (start !== null && currentMinutes < start) {
-          currentMinutes = start;
-        }
-      }
-
-      // 15min prep → work → 15min cleanup
-      currentMinutes += PREP_MIN;
-      const workStartTime = formatTime(currentMinutes);
-      currentMinutes += visit.workMinutes;
-      const workEndTime = formatTime(currentMinutes);
-      currentMinutes += CLEANUP_MIN;
-      const endTime = formatTime(currentMinutes);
-
-      legs.push({
-        fromName: prevIdx === 0 ? "起点" : visits[prevIdx - 1].address,
-        toName: visit.address,
-        durationMin: travelTime,
-        distanceKm: travelDist,
-        arrivalTime,
-        workStartTime,
-        workEndTime,
-        endTime,
-        status,
-        visitId: visit.id
-      });
-
-      totalDuration += travelTime;
-      totalDistance += travelDist;
-      orderedVisits.push(visit);
-      prevIdx = currIdx;
-    }
-
-    // Final leg back to end point
-    let endIdx = prevIdx;
-    if (settings.endLocation === 'home') {
-      endIdx = 0;
-    } else if (settings.endLocation === 'custom') {
-      endIdx = visitCount + 1;
-    }
-
-    if (settings.endLocation !== 'none') {
-      const distData = matrix.rows[prevIdx].elements[endIdx];
-      const travelTime = Math.ceil((distData.duration?.value || 0) / 60);
-      const travelDist = (distData.distance?.value || 0) / 1000;
-      
-      currentMinutes += travelTime;
-      totalDuration += travelTime;
-      totalDistance += travelDist;
-      
-      legs.push({
-        fromName: visits[prevIdx - 1].address,
-        toName: "終点",
-        durationMin: travelTime,
-        distanceKm: travelDist,
-        arrivalTime: formatTime(currentMinutes - travelTime),
-        endTime: formatTime(currentMinutes),
-        status: 'ok'
-      });
-    }
-
-    const label = planId === 'A' ? "最短ルート" : planId === 'B' ? "余裕重視" : "確実性優先";
-
-    return {
-      id: planId,
-      label,
-      order: orderedVisits,
-      legs,
-      totalDurationMin: totalDuration,
-      totalDistanceKm: totalDistance,
-      endTime: formatTime(currentMinutes)
-    };
-  }
-
   const allPlans = permutations.map(p => {
-    // We'll score this permutation for all 3 cases
-    const plan = calculatePlan(p, 'A'); // Base plan for calculations
-    
-    // Violation penalty
+    const plan = calculatePlanForOrder(visits, settings, matrix, p, 'A');
+
     const violations = plan.legs.filter(l => l.status === 'violation').length;
     const warnings = plan.legs.filter(l => l.status === 'warning').length;
     const penalty = violations * 10000 + warnings * 30;
 
-    // A Score: Total Distance (or Time)
     const scoreA = plan.totalDurationMin + penalty;
 
-    // B Score: Time Window Centering.
-    // For one-sided windows, "center" is the single bound itself so we still
-    // get a meaningful gradient toward respecting the constraint.
     let centeringDiff = 0;
     plan.order.forEach((v, i) => {
       const arrival = parseTime(plan.legs[i].arrivalTime);
@@ -226,25 +215,19 @@ export function optimizeRoutes(
           const center = (parseTime(v.timeWindow.start) + parseTime(v.timeWindow.end)) / 2;
           centeringDiff += Math.abs(arrival - center);
         } else if (hasEnd) {
-          const end = parseTime(v.timeWindow.end);
-          centeringDiff += Math.max(0, arrival - end);
+          centeringDiff += Math.max(0, arrival - parseTime(v.timeWindow.end));
         } else if (hasStart) {
-          const start = parseTime(v.timeWindow.start);
-          centeringDiff += Math.max(0, start - arrival);
+          centeringDiff += Math.max(0, parseTime(v.timeWindow.start) - arrival);
         }
       }
     });
     const scoreB = plan.totalDurationMin * 0.3 + centeringDiff + penalty;
 
-    // C Score: Difficulty Prioritization
-    // Hard jobs first, easy jobs before noon
     let difficultyOrderPenalty = 0;
     let easyBeforeNoonBonus = 0;
     plan.order.forEach((v, i) => {
       const rank = i + 1;
-      // Harder jobs should be earlier (rank 1 is best for diff 3)
       difficultyOrderPenalty += v.difficulty * rank * 5;
-      
       const endTime = parseTime(plan.legs[i].endTime);
       if (v.difficulty === 1 && endTime <= 12 * 60) {
         easyBeforeNoonBonus -= 20;
@@ -255,14 +238,13 @@ export function optimizeRoutes(
     return { p, scores: { A: scoreA, B: scoreB, C: scoreC } };
   });
 
-  // Pick best for each
-  const bestA = allPlans.sort((a, b) => a.scores.A - b.scores.A)[0].p;
-  const bestB = allPlans.sort((a, b) => a.scores.B - b.scores.B)[0].p;
-  const bestC = allPlans.sort((a, b) => a.scores.C - b.scores.C)[0].p;
+  const bestA = allPlans.slice().sort((a, b) => a.scores.A - b.scores.A)[0].p;
+  const bestB = allPlans.slice().sort((a, b) => a.scores.B - b.scores.B)[0].p;
+  const bestC = allPlans.slice().sort((a, b) => a.scores.C - b.scores.C)[0].p;
 
   return [
-    calculatePlan(bestA, 'A'),
-    calculatePlan(bestB, 'B'),
-    calculatePlan(bestC, 'C')
+    calculatePlanForOrder(visits, settings, matrix, bestA, 'A'),
+    calculatePlanForOrder(visits, settings, matrix, bestB, 'B'),
+    calculatePlanForOrder(visits, settings, matrix, bestC, 'C'),
   ];
 }
