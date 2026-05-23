@@ -253,9 +253,11 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             />
           );
         })}
-        {/* Inner hour numbers 1..12 (12 at top, clockwise) */}
+        {/* Inner hour numbers 1..12 (12 at top, clockwise). Pulled inward
+            so the staggered time-window layers have room between the
+            numbers and the main ring. */}
         {HOUR_LABELS.map(({ hour, angle }) => {
-          const p = polar(angle, RADIUS - STROKE - 8);
+          const p = polar(angle, RADIUS - STROKE - 22);
           return (
             <text
               key={`h-${hour}`}
@@ -305,15 +307,17 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             </g>
           );
         })}
-        {/* Customer time-window indicators just outside the labels.
-            - 範囲 A〜B: arc from A to B + boundary tick at each end.
-            - 以前 X:   90-min "tail" arc backward from X (open-ended on the
-                       far side) + boundary tick at X — reads as "must be by X".
-            - 以降 X:   90-min arc forward from X + boundary tick at X — reads
-                       as "must be from X onwards". */}
+        {/* Customer time-window indicators on the INNER side of the ring.
+            Each visit's window sits on its own concentric layer, staggered
+            by one stroke-width so multiple overlapping windows are still
+            individually readable. Later visits are drawn last so they
+            visually sit ON TOP of earlier ones when they overlap. */}
         {windowMarkers.map((tw, i) => {
           const color = difficultyColor(tw.difficulty).work;
-          const winRadius = RADIUS + STROKE / 2 + 22;
+          const WIN_STROKE = 3;
+          const LAYER_STEP = WIN_STROKE + 1; // one stroke-width gap between layers
+          // Layer 0 sits just inside the main ring; later visits move inward.
+          const winRadius = RADIUS - STROKE / 2 - 4 - i * LAYER_STEP;
           let arcStart: number;
           let arcEnd: number;
           if (tw.startMin !== null && tw.endMin !== null) {
@@ -331,8 +335,8 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           const d = arcPath(arcStart, arcEnd, winRadius);
           const renderTick = (timeMin: number) => {
             const angle = minutesToAngle(timeMin);
-            const inner = polar(angle, winRadius - 5);
-            const outer = polar(angle, winRadius + 5);
+            const inner = polar(angle, winRadius - 4);
+            const outer = polar(angle, winRadius + 4);
             return (
               <line
                 x1={inner.x}
@@ -347,14 +351,12 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           };
           const isOpenStart = tw.startMin === null; // 以前: tail fades into earlier times
           const isOpenEnd = tw.endMin === null;     // 以降: tail extends into later times
-          // Tangential arrowhead at the OPEN end of a one-sided window so
-          // the direction of the allowed region is explicit.
           const renderArrow = (atTimeMin: number, direction: 'forward' | 'backward') => {
             const angle = minutesToAngle(atTimeMin);
             const sign = direction === 'forward' ? 1 : -1;
             const tip = polar(angle + sign * 7, winRadius);
-            const baseInner = polar(angle + sign * 2, winRadius - 4);
-            const baseOuter = polar(angle + sign * 2, winRadius + 4);
+            const baseInner = polar(angle + sign * 2, winRadius - 3.5);
+            const baseOuter = polar(angle + sign * 2, winRadius + 3.5);
             return (
               <polygon
                 points={`${tip.x},${tip.y} ${baseInner.x},${baseInner.y} ${baseOuter.x},${baseOuter.y}`}
@@ -363,20 +365,18 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             );
           };
           return (
-            <g key={`tw-${i}`} opacity={0.85}>
+            <g key={`tw-${i}`} opacity={0.9}>
               <path
                 d={d}
                 stroke={color}
-                strokeWidth={3}
+                strokeWidth={WIN_STROKE}
                 strokeLinecap={isOpenStart || isOpenEnd ? 'butt' : 'round'}
                 strokeDasharray={isOpenStart || isOpenEnd ? '4 3' : undefined}
                 fill="none"
               />
               {tw.startMin !== null && renderTick(tw.startMin)}
               {tw.endMin !== null && renderTick(tw.endMin)}
-              {/* 以前: arrow at the open (earlier) end pointing further backward. */}
               {isOpenStart && renderArrow(arcStart, 'backward')}
-              {/* 以降: arrow at the open (later) end pointing further forward. */}
               {isOpenEnd && renderArrow(arcEnd, 'forward')}
             </g>
           );
