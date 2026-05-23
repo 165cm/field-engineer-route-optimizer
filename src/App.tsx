@@ -238,6 +238,9 @@ function MainApp() {
   } | null>(null);
   // Visit IDs in the user-chosen order for the "カスタム" plan.
   const [customOrder, setCustomOrder] = useState<string[]>([]);
+  // Snapshot taken just before each reorder so we can roll back when the
+  // user picks "キャンセル" on a violation notice.
+  const previousOrderRef = useRef<string[] | null>(null);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
   const toggleCompleted = (id: string) => {
@@ -299,15 +302,13 @@ function MainApp() {
     showNotice({
       kind: 'error',
       title: '指定時間に違反する案件があります',
-      detail: `${summary} の指定時間を超える順序になっています。順番を再調整するか、お客様の了承を得たうえで時間指定を解除できます。`,
+      detail: `${summary} の指定時間を超える順序になっています。お客様の了承を得たうえで時間指定を解除するか、変更をキャンセルして元の順序に戻してください。`,
       primaryAction: {
         label: '承認して時間指定を解除',
         action: () => {
           const updatedVisits = ctx.visits.map(v =>
             violatedIds.includes(v.id) ? { ...v, timeWindow: undefined } : v
           );
-          // Keep both the optimization context AND the persisted visits in
-          // sync so the input screen reflects the unlocked state too.
           optContextRef.current = { ...ctx, visits: updatedVisits };
           setVisits(prev => prev.map(v =>
             violatedIds.includes(v.id) ? { ...v, timeWindow: undefined } : v
@@ -320,7 +321,12 @@ function MainApp() {
             'X',
           );
           setPlans(prev => prev.map((p, i) => (i === 3 ? updatedPlan : p)));
+          previousOrderRef.current = null;
         },
+      },
+      cancelAction: {
+        label: 'キャンセル（元に戻す）',
+        action: rollbackCustomReorder,
       },
     });
   };
@@ -332,8 +338,43 @@ function MainApp() {
     if (swapWith < 0 || swapWith >= customOrder.length) return;
     const next = customOrder.slice();
     [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    previousOrderRef.current = customOrder.slice();
     setCustomOrder(next);
     recomputeCustomPlan(next);
+  };
+
+  // Predict whether nudging a visit up (-1) or down (+1) would produce a
+  // time-window violation. Used to pre-color the reorder buttons so the
+  // user can see "this move will break something" before tapping.
+  const predictViolation = (visitId: string, direction: -1 | 1): boolean => {
+    const ctx = optContextRef.current;
+    if (!ctx) return false;
+    const idx = customOrder.indexOf(visitId);
+    if (idx < 0) return false;
+    const swapWith = idx + direction;
+    if (swapWith < 0 || swapWith >= customOrder.length) return false;
+    const trial = customOrder.slice();
+    [trial[idx], trial[swapWith]] = [trial[swapWith], trial[idx]];
+    const orderIndices = trial
+      .map(id => ctx.visits.findIndex(v => v.id === id) + 1)
+      .filter(i => i > 0);
+    const trialPlan = calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X');
+    return trialPlan.legs.some(l => l.status === 'violation' && !!l.visitId);
+  };
+
+  // Restore the order snapshot saved before the most recent reorder.
+  const rollbackCustomReorder = () => {
+    const prev = previousOrderRef.current;
+    if (!prev) return;
+    previousOrderRef.current = null;
+    setCustomOrder(prev);
+    const ctx = optContextRef.current;
+    if (!ctx) return;
+    const orderIndices = prev
+      .map(id => ctx.visits.findIndex(v => v.id === id) + 1)
+      .filter(i => i > 0);
+    const restored = calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X');
+    setPlans(p => p.map((plan, i) => (i === 3 ? restored : plan)));
   };
   const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -370,6 +411,10 @@ function MainApp() {
     detail?: string;
     onRetry?: () => void;
     primaryAction?: { label: string; action: () => void };
+    // When present, replaces the default "閉じる" button — used for actions
+    // that should NOT be dismissable silently (e.g. an order change that
+    // produced a constraint violation must be either approved or rolled back).
+    cancelAction?: { label: string; action: () => void };
   };
   const [notice, setNotice] = useState<Notice | null>(null);
   const showNotice = (n: Notice) => setNotice(n);
@@ -1270,26 +1315,36 @@ function MainApp() {
                              )} />
                           </div>
                           <div className="flex gap-1">
-                            {plans[activePlanIdx].id === 'X' && (
-                              <>
-                                <button
-                                  onClick={() => moveCustomVisit(visit.id, -1)}
-                                  disabled={customOrder.indexOf(visit.id) <= 0}
-                                  title="上に移動"
-                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
-                                >
-                                  <ArrowUp className="w-4 h-4 text-blue-400" />
-                                </button>
-                                <button
-                                  onClick={() => moveCustomVisit(visit.id, 1)}
-                                  disabled={customOrder.indexOf(visit.id) >= customOrder.length - 1}
-                                  title="下に移動"
-                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
-                                >
-                                  <ArrowDown className="w-4 h-4 text-blue-400" />
-                                </button>
-                              </>
-                            )}
+                            {plans[activePlanIdx].id === 'X' && (() => {
+                              const upRisk = predictViolation(visit.id, -1);
+                              const downRisk = predictViolation(visit.id, 1);
+                              return (
+                                <>
+                                  <button
+                                    onClick={() => moveCustomVisit(visit.id, -1)}
+                                    disabled={customOrder.indexOf(visit.id) <= 0}
+                                    title={upRisk ? '上に移動（指定時間に違反します）' : '上に移動'}
+                                    className={cn(
+                                      "p-1.5 rounded disabled:opacity-30 disabled:hover:bg-transparent",
+                                      upRisk ? "bg-red-500/15 hover:bg-red-500/25" : "hover:bg-blue-500/10"
+                                    )}
+                                  >
+                                    <ArrowUp className={cn("w-4 h-4", upRisk ? "text-red-400" : "text-blue-400")} />
+                                  </button>
+                                  <button
+                                    onClick={() => moveCustomVisit(visit.id, 1)}
+                                    disabled={customOrder.indexOf(visit.id) >= customOrder.length - 1}
+                                    title={downRisk ? '下に移動（指定時間に違反します）' : '下に移動'}
+                                    className={cn(
+                                      "p-1.5 rounded disabled:opacity-30 disabled:hover:bg-transparent",
+                                      downRisk ? "bg-red-500/15 hover:bg-red-500/25" : "hover:bg-blue-500/10"
+                                    )}
+                                  >
+                                    <ArrowDown className={cn("w-4 h-4", downRisk ? "text-red-400" : "text-blue-400")} />
+                                  </button>
+                                </>
+                              );
+                            })()}
                             <button
                               onClick={() => toggleCompleted(visit.id)}
                               title={isCompleted ? '完了を取り消す' : '完了にする'}
@@ -1596,12 +1651,21 @@ function MainApp() {
                         再試行
                       </button>
                     )}
-                    <button
-                      onClick={clearNotice}
-                      className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded hover:bg-white/10 text-gray-400"
-                    >
-                      閉じる
-                    </button>
+                    {notice.cancelAction ? (
+                      <button
+                        onClick={() => { const a = notice.cancelAction; clearNotice(); a?.action(); }}
+                        className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/20 text-gray-200"
+                      >
+                        {notice.cancelAction.label}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={clearNotice}
+                        className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded hover:bg-white/10 text-gray-400"
+                      >
+                        閉じる
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
