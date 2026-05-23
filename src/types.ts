@@ -46,6 +46,7 @@ export type TaskType = {
 export type Settings = {
   homeAddress: string;
   homeCoords?: google.maps.LatLngLiteral;
+  startTime?: string; // "HH:mm" — departure time from start, default 09:00
   endLocation: 'home' | 'none' | 'custom';
   customEndAddress?: string;
   customEndCoords?: google.maps.LatLngLiteral;
@@ -64,7 +65,7 @@ export type LunchInfo = {
 };
 
 export type RoutePlan = {
-  id: 'A' | 'B' | 'C';
+  id: 'A' | 'B' | 'C' | 'X';
   label: string;
   order: Visit[];
   legs: Leg[];

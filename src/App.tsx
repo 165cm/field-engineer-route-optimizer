@@ -29,18 +29,22 @@ import {
   ChevronRight,
   ClipboardList,
   Utensils,
-  Layers
+  Layers,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo } from './types';
 import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
-import { optimizeRoutes, computeInputOrderBaseline, Baseline } from './lib/optimization';
+import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
+import type { DistanceMatrixLike } from './services/googleMapsService';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 import { isDemoMode } from './lib/demoMode';
 import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } from './lib/demoAI';
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 import { ScheduleClock } from './components/ScheduleClock';
+import { difficultyColor } from './lib/visitColors';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
@@ -171,7 +175,7 @@ export default function App() {
   }
 
   return (
-    <APIProvider apiKey={API_KEY} version="weekly" language="ja" libraries={['places']}>
+    <APIProvider apiKey={API_KEY} version="weekly" language="ja" libraries={['places', 'routes', 'geometry']}>
       <MainApp />
     </APIProvider>
   );
@@ -209,6 +213,7 @@ function MainApp() {
       homeAddress: '東京都新宿区新宿1-1-1',
       endLocation: 'home',
       ...parsed,
+      startTime: parsed.startTime || '09:00',
       lunchSpotIds: parsed.lunchSpotIds || (parsed.lunchSpotId && parsed.lunchSpotId !== 'none' ? [parsed.lunchSpotId] : []),
       savedLunchSpots: savedSpots,
       tasks: parsed.tasks || [
@@ -225,6 +230,14 @@ function MainApp() {
   });
 
   const [plans, setPlans] = useState<RoutePlan[]>([]);
+  // Context needed to recompute the custom plan when the user reorders visits.
+  const optContextRef = useRef<{
+    visits: Visit[];
+    settings: Settings;
+    matrix: DistanceMatrixLike;
+  } | null>(null);
+  // Visit IDs in the user-chosen order for the "カスタム" plan.
+  const [customOrder, setCustomOrder] = useState<string[]>([]);
   const [baseline, setBaseline] = useState<Baseline | null>(null);
   const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
   const toggleCompleted = (id: string) => {
@@ -236,10 +249,47 @@ function MainApp() {
   };
   const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
   const [activePlanIdx, setActivePlanIdx] = useState(0);
+
+  // Matches Tailwind's lg: breakpoint. Used so we can mount the map either
+  // inside the sidebar (mobile) OR as the main right-side panel (desktop)
+  // without paying for two map instances at once.
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  // Recompute the custom plan when its order changes. Falls back to a no-op
+  // if optimization context hasn't been captured yet.
+  const recomputeCustomPlan = (nextOrder: string[]) => {
+    const ctx = optContextRef.current;
+    if (!ctx) return;
+    const orderIndices = nextOrder
+      .map(id => ctx.visits.findIndex(v => v.id === id) + 1)
+      .filter(i => i > 0);
+    const next = calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X');
+    setPlans(prev => prev.map((p, i) => (i === 3 ? next : p)));
+  };
+
+  const moveCustomVisit = (visitId: string, direction: -1 | 1) => {
+    const idx = customOrder.indexOf(visitId);
+    if (idx < 0) return;
+    const swapWith = idx + direction;
+    if (swapWith < 0 || swapWith >= customOrder.length) return;
+    const next = customOrder.slice();
+    [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    setCustomOrder(next);
+    recomputeCustomPlan(next);
+  };
   const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [showLunchSettings, setShowLunchSettings] = useState(false);
   const [showTasksSettings, setShowTasksSettings] = useState(false);
+  const [showStartEndSettings, setShowStartEndSettings] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
@@ -276,9 +326,9 @@ function MainApp() {
 
   const handleLoadSampleAndOptimize = () => {
     const sample: Visit[] = [
-      { id: 's1', address: '東京都新宿区西新宿2-8-1', customerName: '田中様', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
-      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', customerName: '佐藤様', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
-      { id: 's3', address: '東京都港区六本木6-10-1', customerName: '鈴木様', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
+      { id: 's1', address: '東京都新宿区西新宿2-8-1', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
+      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
+      { id: 's3', address: '東京都港区六本木6-10-1', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
     ];
     setVisits(sample);
     dismissOnboarding();
@@ -404,7 +454,6 @@ function MainApp() {
     const newVisit: Visit = {
       id: Math.random().toString(36).substr(2, 9),
       address: '',
-      customerName: '',
       workMinutes: 60,
       difficulty: 2
     };
@@ -432,7 +481,7 @@ function MainApp() {
     const newVisits = data.map((v: any) => ({
       id: Math.random().toString(36).substr(2, 9),
       address: v.address,
-      customerName: v.customerName,
+      // customerName intentionally not copied from AI-parsed data (privacy).
       memo: v.memo,
       workMinutes: 60,
       difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
@@ -574,6 +623,22 @@ function MainApp() {
 
       // 3. Optimize + compute baseline (input order) for savings display
       const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      // Seed the manual ("カスタム") plan with the best automatic order so the
+      // user has a sensible starting point to nudge from.
+      const customSeed = optimizedPlans[0].order.map(v => v.id);
+      const customPlan = calculatePlanForOrder(
+        updatedVisits,
+        updatedSettings,
+        matrix,
+        customSeed
+          .map(id => updatedVisits.findIndex(v => v.id === id) + 1)
+          .filter(i => i > 0),
+        'X',
+      );
+      optimizedPlans.push(customPlan);
+      // Persist context for later re-computation when the user reorders.
+      optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
+      setCustomOrder(customSeed);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
 
@@ -762,10 +827,33 @@ function MainApp() {
             <div className="bg-card p-4 rounded-xl border border-ui">
               <div className="flex justify-between items-center mb-3">
                 <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider">
-                  <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点
+                  <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・出発時刻
+                </div>
+                <button
+                  onClick={() => setShowStartEndSettings(true)}
+                  className="text-[10px] bg-slate-800 text-blue-400 hover:text-blue-300 font-bold px-2 py-1 rounded border border-ui"
+                >
+                  編集
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">起点</span>
+                  <p className="text-sm font-medium truncate">{settings.homeAddress}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">出発</span>
+                  <p className="text-sm font-medium num-font">{settings.startTime || '09:00'}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">終点</span>
+                  <p className="text-sm font-medium truncate">
+                    {settings.endLocation === 'home' && '起点と同じ'}
+                    {settings.endLocation === 'none' && '終点なし（最終訪問先で解散）'}
+                    {settings.endLocation === 'custom' && (settings.customEndAddress || '未設定')}
+                  </p>
                 </div>
               </div>
-              <p className="text-sm font-medium">{settings.homeAddress}</p>
             </div>
 
             <div className="flex justify-between items-end mt-4 mb-1">
@@ -803,10 +891,9 @@ function MainApp() {
                         onChange={(e) => {
                           const tId = e.target.value;
                           const task = settings.tasks.find(t => t.id === tId);
-                          handleUpdateVisit(visit.id, { 
-                            taskId: tId, 
-                            customerName: task?.name || '', // 互換性のための保存
-                            workMinutes: task ? task.defaultMinutes : visit.workMinutes 
+                          handleUpdateVisit(visit.id, {
+                            taskId: tId,
+                            workMinutes: task ? task.defaultMinutes : visit.workMinutes
                           });
                         }}
                       >
@@ -1003,15 +1090,15 @@ function MainApp() {
             </div>
           </motion.div>
         ) : (
-          <motion.div 
+          <motion.div
             key="result"
             initial={{ opacity: 0, x: 50 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -50 }}
             className="flex flex-col lg:flex-row w-full lg:h-[calc(100vh-64px)] lg:overflow-hidden overflow-y-auto"
           >
-            {/* Sidebar (Route List) */}
-            <aside className="w-full lg:w-[380px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl">
+            {/* Sidebar (Route List). Full-width on mobile, fixed 420px on desktop. */}
+            <aside className="w-full lg:w-[420px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl lg:overflow-y-auto custom-scrollbar">
               {/* Savings Banner */}
               {baseline && plans[activePlanIdx] && (() => {
                 const FUEL_KM_PER_L = 12;
@@ -1065,18 +1152,36 @@ function MainApp() {
                       activePlanIdx === idx ? "bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40" : "bg-slate-800 border-ui text-secondary hover:bg-slate-700"
                     )}
                   >
-                    案{plan.id}: {plan.id === 'A' ? '最短' : plan.id === 'B' ? '余裕' : '確実'}
+                    {plan.label}
                   </button>
                 ))}
               </div>
 
               {/* Schedule Clock */}
               <div className="px-4 pt-4 pb-3 border-b border-ui">
-                <ScheduleClock plan={plans[activePlanIdx]} />
+                <ScheduleClock plan={plans[activePlanIdx]} tasks={settings.tasks} />
               </div>
 
+              {/* Mobile-only: map directly under the schedule clock.
+                  On desktop the map lives in its own right-side section below. */}
+              {!isDesktop && (
+                <>
+                  <div className="h-[360px] relative border-b border-ui bg-bg">
+                    <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
+                  </div>
+                  <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
+                    <div className="flex items-center gap-3">
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" /><span className="font-bold text-gray-300">正常</span></span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#fbbf24]" /><span className="font-bold text-gray-300">余裕少</span></span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_#f87171]" /><span className="font-bold text-gray-300">遅延懸念</span></span>
+                    </div>
+                    <span className="text-secondary italic">案: {plans[activePlanIdx].label}</span>
+                  </div>
+                </>
+              )}
+
               {/* Path List */}
-              <div className="flex-1 lg:overflow-y-auto p-4 space-y-3 custom-scrollbar lg:min-h-0">
+              <div className="p-4 space-y-3 custom-scrollbar">
                 {plans[activePlanIdx].legs.map((leg, idx) => {
                   const visit = leg.visitId ? plans[activePlanIdx].order[idx] : null;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
@@ -1093,16 +1198,19 @@ function MainApp() {
                           leg.status === 'violation' ? "border-red-500/30" : "border-ui"
                         )}
                       >
-                        {/* Status bar */}
-                        <div className={cn(
-                          "absolute left-0 top-0 w-1 h-full",
-                          isCompleted ? "bg-green-500" :
-                          leg.status === 'ok' ? "bg-green-500" : leg.status === 'warning' ? "bg-yellow-500" : "bg-red-500"
-                        )} />
+                        {/* Difficulty stripe — same color as the matching
+                            clock arc and map marker for fast cross-reference. */}
+                        <div
+                          className="absolute left-0 top-0 w-1 h-full"
+                          style={{ background: difficultyColor(visit.difficulty).work }}
+                        />
 
                         <div className="flex justify-between items-start mb-2">
                           <div className="flex items-center gap-2">
-                             <div className="px-2 py-0.5 bg-slate-800 rounded text-[10px] font-bold num-font">
+                             <div
+                               className="px-2 py-0.5 rounded text-[10px] font-bold num-font text-white"
+                               style={{ background: difficultyColor(visit.difficulty).work }}
+                             >
                                {idx + 1}番 {leg.arrivalTime}着
                              </div>
                              <div className={cn(
@@ -1111,6 +1219,26 @@ function MainApp() {
                              )} />
                           </div>
                           <div className="flex gap-1">
+                            {plans[activePlanIdx].id === 'X' && (
+                              <>
+                                <button
+                                  onClick={() => moveCustomVisit(visit.id, -1)}
+                                  disabled={customOrder.indexOf(visit.id) <= 0}
+                                  title="上に移動"
+                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
+                                >
+                                  <ArrowUp className="w-4 h-4 text-blue-400" />
+                                </button>
+                                <button
+                                  onClick={() => moveCustomVisit(visit.id, 1)}
+                                  disabled={customOrder.indexOf(visit.id) >= customOrder.length - 1}
+                                  title="下に移動"
+                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
+                                >
+                                  <ArrowDown className="w-4 h-4 text-blue-400" />
+                                </button>
+                              </>
+                            )}
                             <button
                               onClick={() => toggleCompleted(visit.id)}
                               title={isCompleted ? '完了を取り消す' : '完了にする'}
@@ -1131,8 +1259,12 @@ function MainApp() {
                           </div>
                         </div>
 
-                        <h3 className={cn("text-base font-bold mb-0.5", isCompleted && "line-through text-secondary")}>
-                          {visit.customerName || "依頼者不明"}
+                        <h3 className={cn("text-base font-bold mb-0.5 truncate", isCompleted && "line-through text-secondary")}>
+                          {(() => {
+                            const task = settings.tasks.find(t => t.id === visit.taskId);
+                            if (task) return task.name;
+                            return visit.memo?.slice(0, 30) || '訪問先';
+                          })()}
                         </h3>
                         <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
                           {visit.address}
@@ -1295,52 +1427,42 @@ function MainApp() {
               </div>
             </aside>
 
-            {/* Map Section */}
-            <section className="w-full h-[450px] lg:h-full lg:flex-1 relative bg-bg overflow-hidden shrink-0 flex-col">
-              {/* Interactive Map */}
-              <div className="absolute inset-0 z-0 flex">
-                <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
-              </div>
+            {/* Desktop-only: large map as the main right-side panel. */}
+            {isDesktop && (
+              <section className="hidden lg:flex w-full lg:h-full lg:flex-1 relative bg-bg overflow-hidden shrink-0 flex-col">
+                <div className="absolute inset-0 z-0 flex">
+                  <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
+                </div>
 
-              {/* Floating Stats */}
-              <div className="absolute top-6 left-6 z-10 hidden sm:block">
-                <div className="glass p-4 rounded-2xl border border-ui shadow-2xl flex gap-8">
-                  <div className="flex flex-col">
-                    <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動時間</span>
-                    <span className="text-2xl num-font">{plans[activePlanIdx].totalDurationMin}<span className="text-xs font-normal text-secondary ml-1">min</span></span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動距離</span>
-                    <span className="text-2xl num-font">{plans[activePlanIdx].totalDistanceKm.toFixed(1)}<span className="text-xs font-normal text-secondary ml-1">km</span></span>
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">最終完了予定</span>
-                    <span className="text-2xl num-font text-blue-400">{plans[activePlanIdx].endTime}</span>
+                {/* Floating totals on the map */}
+                <div className="absolute top-6 left-6 z-10">
+                  <div className="glass p-4 rounded-2xl border border-ui shadow-2xl flex gap-8">
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動時間</span>
+                      <span className="text-2xl num-font">{plans[activePlanIdx].totalDurationMin}<span className="text-xs font-normal text-secondary ml-1">min</span></span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動距離</span>
+                      <span className="text-2xl num-font">{plans[activePlanIdx].totalDistanceKm.toFixed(1)}<span className="text-xs font-normal text-secondary ml-1">km</span></span>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">最終完了予定</span>
+                      <span className="text-2xl num-font text-blue-400">{plans[activePlanIdx].endTime}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Map Footer Info */}
-              <div className="absolute bottom-0 left-0 right-0 h-16 glass border-t border-ui hidden sm:flex items-center px-6 justify-between z-10">
-                <div className="flex gap-8">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80]"></div>
-                    <span className="text-xs font-bold text-gray-300">正常</span>
+                {/* Footer legend strip */}
+                <div className="absolute bottom-0 left-0 right-0 h-14 glass border-t border-ui flex items-center px-6 justify-between z-10">
+                  <div className="flex gap-6">
+                    <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80]" /><span className="text-xs font-bold text-gray-300">正常</span></div>
+                    <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-yellow-400 shadow-[0_0_8px_#fbbf24]" /><span className="text-xs font-bold text-gray-300">余裕少</span></div>
+                    <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]" /><span className="text-xs font-bold text-gray-300">遅延懸念</span></div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-yellow-400 shadow-[0_0_8px_#fbbf24]"></div>
-                    <span className="text-xs font-bold text-gray-300">余裕少</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]"></div>
-                    <span className="text-xs font-bold text-gray-300">遅延懸念</span>
-                  </div>
+                  <div className="text-xs text-secondary italic">案: {plans[activePlanIdx].label}</div>
                 </div>
-                <div className="flex items-center gap-4 text-xs text-secondary italic">
-                   ルート案: {plans[activePlanIdx].label}
-                </div>
-              </div>
-            </section>
+              </section>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -1487,13 +1609,27 @@ function MainApp() {
       {/* Tasks Edit Modal */}
       <AnimatePresence>
         {showTasksSettings && (
-          <TasksModal 
+          <TasksModal
             settings={settings}
             onSave={(val) => {
               setSettings(val);
               setShowTasksSettings(false);
             }}
             onClose={() => setShowTasksSettings(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Start/End/Departure Modal */}
+      <AnimatePresence>
+        {showStartEndSettings && (
+          <StartEndModal
+            settings={settings}
+            onSave={(val) => {
+              setSettings(val);
+              setShowStartEndSettings(false);
+            }}
+            onClose={() => setShowStartEndSettings(false)}
           />
         )}
       </AnimatePresence>
@@ -1895,6 +2031,120 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
   );
 }
 
+function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
+  const [homeAddress, setHomeAddress] = useState(settings.homeAddress);
+  const [startTime, setStartTime] = useState(settings.startTime || '09:00');
+  const [endLocation, setEndLocation] = useState<'home' | 'none' | 'custom'>(settings.endLocation);
+  const [customEndAddress, setCustomEndAddress] = useState(settings.customEndAddress || '');
+
+  const handleSave = () => {
+    const next: Settings = {
+      ...settings,
+      homeAddress: homeAddress.trim() || settings.homeAddress,
+      startTime,
+      endLocation,
+      customEndAddress: endLocation === 'custom' ? customEndAddress.trim() : settings.customEndAddress,
+    };
+    // Invalidate cached coords if the home address changed so the next
+    // optimization re-geocodes.
+    if (next.homeAddress !== settings.homeAddress) {
+      next.homeCoords = undefined;
+    }
+    if (endLocation === 'custom' && customEndAddress.trim() !== (settings.customEndAddress || '')) {
+      next.customEndCoords = undefined;
+    }
+    onSave(next);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.95 }}
+        animate={{ scale: 1 }}
+        exit={{ scale: 0.95 }}
+        className="bg-card w-full max-w-md flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
+      >
+        <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・出発時刻
+          </h2>
+          <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar">
+          {/* Start address */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">起点（出発地）住所</label>
+            <input
+              className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none font-medium"
+              value={homeAddress}
+              onChange={(e) => setHomeAddress(e.target.value)}
+              placeholder="例: 東京都新宿区新宿1-1-1"
+            />
+          </div>
+
+          {/* Departure time */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">出発時刻</label>
+            <input
+              type="time"
+              className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none num-font"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+            />
+            <p className="text-[10px] text-secondary mt-1">この時刻に起点を出発するものとして、各訪問先の到着時刻を計算します。</p>
+          </div>
+
+          {/* End location */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">終点</label>
+            <div className="space-y-2">
+              {([
+                { v: 'home', label: '起点と同じ場所に戻る' },
+                { v: 'custom', label: '別の住所を指定' },
+                { v: 'none', label: '終点なし（最終訪問先で解散）' },
+              ] as { v: 'home' | 'none' | 'custom', label: string }[]).map(opt => (
+                <label key={opt.v} className={cn(
+                  'flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors',
+                  endLocation === opt.v ? 'bg-blue-500/10 border-blue-500/40' : 'bg-slate-800/40 border-ui hover:bg-slate-800/70'
+                )}>
+                  <input
+                    type="radio"
+                    name="endLocation"
+                    value={opt.v}
+                    checked={endLocation === opt.v}
+                    onChange={() => setEndLocation(opt.v)}
+                    className="accent-blue-500"
+                  />
+                  <span className="text-sm font-medium">{opt.label}</span>
+                </label>
+              ))}
+            </div>
+            {endLocation === 'custom' && (
+              <input
+                className="mt-2 w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none font-medium"
+                value={customEndAddress}
+                onChange={(e) => setCustomEndAddress(e.target.value)}
+                placeholder="終点の住所"
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
+           <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">キャンセル</button>
+           <button onClick={handleSave} className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30">設定を反映</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function CameraCTA({ onImage, disabled }: { onImage: (base64: string, mime: string) => void, disabled: boolean }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2048,29 +2298,13 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
   const modeCfg = MAP_MODE_CONFIG[mapMode];
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
 
+  // Draw the route polyline.
   useEffect(() => {
-    if (!map || !routesLib || !plan) return;
+    if (!map || !plan) return;
 
-    // Clear previous
     polylinesRef.current.forEach(p => p.setMap(null));
     polylinesRef.current = [];
 
-    const waypoints = plan.order.map(v => v.coords || v.address).filter(Boolean);
-    const origin = settings.homeCoords || settings.homeAddress;
-    
-    let dest = origin;
-    if (settings.endLocation === 'custom' && settings.customEndAddress) {
-      dest = settings.customEndCoords || settings.customEndAddress;
-    } else if (settings.endLocation === 'none') {
-      dest = plan.order[plan.order.length - 1].coords || plan.order[plan.order.length - 1].address;
-    }
-
-    const intermediate = waypoints.slice(0, settings.endLocation === 'none' ? -1 : undefined);
-
-    // Using traditional DirectionsService because computeRoutes is a bit more complex for multiple stops without a wrapper
-    // Actually, Constitution says NEVER use DirectionsService. I must use Route.computeRoutes.
-    // Routes API (New) supports up to 10 intermediate waypoints.
-    
     const originCoords = settings.homeCoords;
     if (!originCoords) return;
 
@@ -2081,28 +2315,132 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
       destCoords = plan.order[plan.order.length - 1].coords || originCoords;
     }
 
-    const intermediateWaypoints = intermediate.map(w => {
-      const coords = typeof w === 'string' ? null : w;
-      return coords ? { location: coords } : null;
-    }).filter(Boolean) as google.maps.routes.Waypoint[];
+    // Build the ordered list of pin coordinates we want to connect.
+    const orderedCoords: google.maps.LatLngLiteral[] = [originCoords];
+    const visitsForRoute = plan.order.slice(
+      0,
+      settings.endLocation === 'none' ? -1 : undefined
+    );
+    visitsForRoute.forEach(v => { if (v.coords) orderedCoords.push(v.coords); });
+    if (settings.endLocation !== 'none') orderedCoords.push(destCoords);
 
-    routesLib.Route.computeRoutes({
-      origin: { location: originCoords },
-      destination: { location: destCoords },
-      intermediates: intermediateWaypoints,
+    const renderPolyline = (path: google.maps.LatLngLiteral[] | google.maps.LatLng[], isFallback: boolean) => {
+      // White halo underneath for legibility on dark/satellite/light maps.
+      const halo = new google.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: '#ffffff',
+        strokeOpacity: 0.85,
+        strokeWeight: 10,
+        zIndex: 1,
+      });
+      // Main line + repeating forward arrows so the direction of travel is
+      // unmistakable on a sinuous route.
+      const arrow: google.maps.IconSequence = {
+        icon: {
+          path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+          scale: 3,
+          strokeColor: '#ffffff',
+          strokeWeight: 1.5,
+          fillColor: '#1d4ed8',
+          fillOpacity: 1,
+        },
+        offset: '0',
+        repeat: '90px',
+      };
+      const line = new google.maps.Polyline({
+        path,
+        geodesic: true,
+        strokeColor: '#1d4ed8',
+        strokeOpacity: isFallback ? 0.85 : 1,
+        strokeWeight: 6,
+        zIndex: 2,
+        icons: [arrow],
+        ...(isFallback ? { } : {}),
+      });
+      halo.setMap(map);
+      line.setMap(map);
+      polylinesRef.current.push(halo, line);
+    };
+
+    // Immediate fallback: draw straight segments through pins so the user
+    // always sees direction & sequence even if Routes API is slow / fails.
+    if (orderedCoords.length >= 2) {
+      renderPolyline(orderedCoords, true);
+    }
+
+    if (!routesLib) return;
+
+    // Use DirectionsService (Directions API) for the road-following path.
+    // The new Route.computeRoutes (Routes API) returned 403 PERMISSION_DENIED
+    // unless that specific API was enabled in GCP; DirectionsService uses the
+    // long-standing Directions API which is the more commonly enabled one and
+    // gives us the same shape (overview_path: LatLng[]).
+    const waypoints: google.maps.DirectionsWaypoint[] = visitsForRoute
+      .map(v => (v.coords ? { location: v.coords, stopover: true } : null))
+      .filter(Boolean) as google.maps.DirectionsWaypoint[];
+
+    let cancelled = false;
+    const directions = new google.maps.DirectionsService();
+    directions.route({
+      origin: originCoords,
+      destination: destCoords,
+      waypoints,
+      optimizeWaypoints: false, // visit order is already optimized upstream
       travelMode: google.maps.TravelMode.DRIVING,
-      fields: ['path', 'viewport']
-    }).then(({ routes }) => {
-      if (routes?.[0]) {
-        const polyLines = routes[0].createPolylines();
-        polyLines.forEach(p => p.setMap(map));
-        polylinesRef.current = polyLines;
-        if (routes[0].viewport) map.fitBounds(routes[0].viewport, 40);
+    }).then(result => {
+      if (cancelled) return;
+      const path = result.routes?.[0]?.overview_path;
+      if (!path || path.length === 0) {
+        console.warn('DirectionsService returned no path; keeping straight-line fallback', result);
+        return;
       }
+      polylinesRef.current.forEach(p => p.setMap(null));
+      polylinesRef.current = [];
+      renderPolyline(path, false);
+    }).catch(err => {
+      console.error('DirectionsService failed; keeping straight-line fallback', err);
     });
 
-    return () => polylinesRef.current.forEach(p => p.setMap(null));
+    return () => {
+      cancelled = true;
+      polylinesRef.current.forEach(p => p.setMap(null));
+      polylinesRef.current = [];
+    };
   }, [map, routesLib, plan, settings]);
+
+  // Fit all pins (home, visits, custom end, lunch candidates) with ~1.3x margin.
+  useEffect(() => {
+    if (!map) return;
+    const points: google.maps.LatLngLiteral[] = [];
+    if (settings.homeCoords) points.push(settings.homeCoords);
+    if (settings.endLocation === 'custom' && settings.customEndCoords) {
+      points.push(settings.customEndCoords);
+    }
+    plan.order.forEach(v => { if (v.coords) points.push(v.coords); });
+    plan.lunchCandidates?.forEach(s => { if (s.location) points.push(s.location); });
+    if (points.length === 0) return;
+
+    const bounds = new google.maps.LatLngBounds();
+    points.forEach(p => bounds.extend(p));
+
+    if (points.length === 1) {
+      map.setCenter(points[0]);
+      map.setZoom(14);
+      return;
+    }
+
+    // 1.3x viewport: 30% wider, 15% on each side.
+    const ne = bounds.getNorthEast();
+    const sw = bounds.getSouthWest();
+    const latPad = Math.max((ne.lat() - sw.lat()) * 0.15, 0.002);
+    const lngPad = Math.max((ne.lng() - sw.lng()) * 0.15, 0.002);
+    const padded = new google.maps.LatLngBounds(
+      { lat: sw.lat() - latPad, lng: sw.lng() - lngPad },
+      { lat: ne.lat() + latPad, lng: ne.lng() + lngPad },
+    );
+    map.fitBounds(padded);
+  }, [map, plan, settings]);
 
   return (
     <div className="w-full h-full relative">
@@ -2123,7 +2461,10 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
         {plan.order.map((v, i) => (
           v.coords && (
             <AdvancedMarker key={v.id} position={v.coords}>
-               <div className="bg-blue-600 text-white w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg">
+               <div
+                 className="text-white w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg"
+                 style={{ background: difficultyColor(v.difficulty).work }}
+               >
                  {i + 1}
                </div>
             </AdvancedMarker>
