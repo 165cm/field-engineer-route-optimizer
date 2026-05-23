@@ -153,24 +153,38 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
 
   const workSegments = segments.filter(s => s.kind === 'work');
 
-  // Customer time windows ("指定時間"), one per visit that has one set.
+  // Customer time windows ("指定時間"), one entry per visit. Visits with no
+  // explicit timeWindow get a faint "default 10:00-17:00" marker so the
+  // chart still shows a baseline workday band on every layer.
   type WindowMarker = {
     visitIndex: number;
     difficulty: Difficulty;
-    startMin: number | null;  // 以降 lower bound
-    endMin: number | null;    // 以前 upper bound
+    startMin: number | null;  // 以降 lower bound (null for 以前-only / default)
+    endMin: number | null;    // 以前 upper bound (null for 以降-only / default)
+    isDefault: boolean;       // true when no real timeWindow was set
   };
+  const DEFAULT_DAY_START = 10 * 60; // 10:00
+  const DEFAULT_DAY_END = 17 * 60;   // 17:00
   const windowMarkers: WindowMarker[] = [];
   plan.order.forEach((v, idx) => {
-    if (!v.timeWindow) return;
-    const hasStart = !!v.timeWindow.start;
-    const hasEnd = !!v.timeWindow.end;
-    if (!hasStart && !hasEnd) return;
+    const hasStart = !!v.timeWindow?.start;
+    const hasEnd = !!v.timeWindow?.end;
+    if (!hasStart && !hasEnd) {
+      windowMarkers.push({
+        visitIndex: idx + 1,
+        difficulty: v.difficulty,
+        startMin: DEFAULT_DAY_START,
+        endMin: DEFAULT_DAY_END,
+        isDefault: true,
+      });
+      return;
+    }
     windowMarkers.push({
       visitIndex: idx + 1,
       difficulty: v.difficulty,
-      startMin: hasStart ? parseTime(v.timeWindow.start) : null,
-      endMin: hasEnd ? parseTime(v.timeWindow.end) : null,
+      startMin: hasStart ? parseTime(v.timeWindow!.start) : null,
+      endMin: hasEnd ? parseTime(v.timeWindow!.end) : null,
+      isDefault: false,
     });
   });
 
@@ -313,10 +327,13 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             individually readable. Later visits are drawn last so they
             visually sit ON TOP of earlier ones when they overlap. */}
         {windowMarkers.map((tw, i) => {
-          const color = difficultyColor(tw.difficulty).work;
+          // Default markers use the lighter prep shade ("no constraint, just
+          // the baseline workday"); explicit windows use the bolder work
+          // shade so they stand out.
+          const diffColor = difficultyColor(tw.difficulty);
+          const color = tw.isDefault ? diffColor.prep : diffColor.work;
           const WIN_STROKE = 3;
-          const LAYER_STEP = WIN_STROKE + 1; // one stroke-width gap between layers
-          // Layer 0 sits just inside the main ring; later visits move inward.
+          const LAYER_STEP = WIN_STROKE + 1;
           const winRadius = RADIUS - STROKE / 2 - 4 - i * LAYER_STEP;
           let arcStart: number;
           let arcEnd: number;
@@ -349,8 +366,8 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
               />
             );
           };
-          const isOpenStart = tw.startMin === null; // 以前: tail fades into earlier times
-          const isOpenEnd = tw.endMin === null;     // 以降: tail extends into later times
+          const isOpenStart = !tw.isDefault && tw.startMin === null;
+          const isOpenEnd = !tw.isDefault && tw.endMin === null;
           const renderArrow = (atTimeMin: number, direction: 'forward' | 'backward') => {
             const angle = minutesToAngle(atTimeMin);
             const sign = direction === 'forward' ? 1 : -1;
@@ -365,7 +382,7 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             );
           };
           return (
-            <g key={`tw-${i}`} opacity={0.9}>
+            <g key={`tw-${i}`} opacity={tw.isDefault ? 0.55 : 0.9}>
               <path
                 d={d}
                 stroke={color}
@@ -374,8 +391,10 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
                 strokeDasharray={isOpenStart || isOpenEnd ? '4 3' : undefined}
                 fill="none"
               />
-              {tw.startMin !== null && renderTick(tw.startMin)}
-              {tw.endMin !== null && renderTick(tw.endMin)}
+              {/* Default markers are just a background "any time within the
+                  workday is fine" hint — no ticks / arrows. */}
+              {!tw.isDefault && tw.startMin !== null && renderTick(tw.startMin)}
+              {!tw.isDefault && tw.endMin !== null && renderTick(tw.endMin)}
               {isOpenStart && renderArrow(arcStart, 'backward')}
               {isOpenEnd && renderArrow(arcEnd, 'forward')}
             </g>
@@ -426,8 +445,8 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
         <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-300 border border-slate-500/30">
           <span className="w-2 h-2 rounded-full bg-slate-500" /> 空き
         </span>
-        {windowMarkers.length > 0 && (
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-700/40 text-slate-200 border border-slate-500/40" title="円の外側に表示される細い線は、お客様の指定時間です。範囲指定なら両端、以前/以降なら片端に短い目印が付きます。">
+        {windowMarkers.some(m => !m.isDefault) && (
+          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-700/40 text-slate-200 border border-slate-500/40" title="メインリングの内側の細い線は、お客様の指定時間です。範囲は両端に目印、以前/以降は片端に目印と矢印が付きます。指定なしの場合は10〜17時の薄い帯が表示されます。">
             <svg width="14" height="6" viewBox="0 0 14 6">
               <line x1="2" y1="3" x2="12" y2="3" stroke="currentColor" strokeWidth="2" strokeDasharray="3 2" />
               <line x1="11" y1="0" x2="11" y2="6" stroke="currentColor" strokeWidth="2" />

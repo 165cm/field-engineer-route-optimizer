@@ -264,7 +264,11 @@ function MainApp() {
   }, []);
 
   // Recompute the custom plan when its order changes. Falls back to a no-op
-  // if optimization context hasn't been captured yet.
+  // if optimization context hasn't been captured yet. If the new order
+  // pushes any visit outside its customer time window, surface a notice
+  // with an "approve & unlock" action that strips the time window from
+  // the offending visits — so the user can confirm they cleared it with
+  // the customer and continue freely.
   const recomputeCustomPlan = (nextOrder: string[]) => {
     const ctx = optContextRef.current;
     if (!ctx) return;
@@ -273,6 +277,52 @@ function MainApp() {
       .filter(i => i > 0);
     const next = calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X');
     setPlans(prev => prev.map((p, i) => (i === 3 ? next : p)));
+
+    const violatedIds = next.legs
+      .filter(l => l.status === 'violation' && l.visitId)
+      .map(l => l.visitId!) as string[];
+    if (violatedIds.length === 0) return;
+
+    const townOf = (v: Visit) => {
+      const m = v.address?.match(/[市区町村]([^0-9０-９一二三四五六七八九十百千]+)/);
+      return (m && m[1] ? m[1] : v.address || '').slice(0, 6);
+    };
+    const violatedVisits = ctx.visits.filter(v => violatedIds.includes(v.id));
+    const summary = violatedVisits.map(v => {
+      const tw = v.timeWindow;
+      const range = tw?.start && tw?.end ? `${tw.start}〜${tw.end}` :
+                    tw?.end ? `〜${tw.end}` :
+                    tw?.start ? `${tw.start}〜` : '';
+      return `${townOf(v)}${range ? `（${range}）` : ''}`;
+    }).join('、');
+
+    showNotice({
+      kind: 'error',
+      title: '指定時間に違反する案件があります',
+      detail: `${summary} の指定時間を超える順序になっています。順番を再調整するか、お客様の了承を得たうえで時間指定を解除できます。`,
+      primaryAction: {
+        label: '承認して時間指定を解除',
+        action: () => {
+          const updatedVisits = ctx.visits.map(v =>
+            violatedIds.includes(v.id) ? { ...v, timeWindow: undefined } : v
+          );
+          // Keep both the optimization context AND the persisted visits in
+          // sync so the input screen reflects the unlocked state too.
+          optContextRef.current = { ...ctx, visits: updatedVisits };
+          setVisits(prev => prev.map(v =>
+            violatedIds.includes(v.id) ? { ...v, timeWindow: undefined } : v
+          ));
+          const updatedPlan = calculatePlanForOrder(
+            updatedVisits,
+            ctx.settings,
+            ctx.matrix,
+            orderIndices,
+            'X',
+          );
+          setPlans(prev => prev.map((p, i) => (i === 3 ? updatedPlan : p)));
+        },
+      },
+    });
   };
 
   const moveCustomVisit = (visitId: string, direction: -1 | 1) => {
@@ -319,6 +369,7 @@ function MainApp() {
     title: string;
     detail?: string;
     onRetry?: () => void;
+    primaryAction?: { label: string; action: () => void };
   };
   const [notice, setNotice] = useState<Notice | null>(null);
   const showNotice = (n: Notice) => setNotice(n);
@@ -1528,7 +1579,15 @@ function MainApp() {
                   {notice.detail && (
                     <p className="text-[11px] text-gray-300 leading-relaxed break-words">{notice.detail}</p>
                   )}
-                  <div className="flex gap-2 mt-2">
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    {notice.primaryAction && (
+                      <button
+                        onClick={() => { const a = notice.primaryAction; clearNotice(); a?.action(); }}
+                        className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white border border-blue-400/50"
+                      >
+                        {notice.primaryAction.label}
+                      </button>
+                    )}
                     {notice.onRetry && (
                       <button
                         onClick={() => { const r = notice.onRetry; clearNotice(); r?.(); }}
