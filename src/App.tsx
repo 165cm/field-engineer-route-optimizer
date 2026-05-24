@@ -2036,14 +2036,20 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
   const [startTime, setStartTime] = useState(settings.startTime || '09:00');
   const [endLocation, setEndLocation] = useState<'home' | 'none' | 'custom'>(settings.endLocation);
   const [customEndAddress, setCustomEndAddress] = useState(settings.customEndAddress || '');
+  const trimmedHomeAddress = homeAddress.trim();
+  const trimmedCustomEndAddress = customEndAddress.trim();
+  const homeAddressError = !trimmedHomeAddress ? '起点住所を入力してください。' : '';
+  const customEndAddressError = endLocation === 'custom' && !trimmedCustomEndAddress ? '終点住所を入力してください。' : '';
+  const canSave = !homeAddressError && !customEndAddressError;
 
   const handleSave = () => {
+    if (!canSave) return;
     const next: Settings = {
       ...settings,
-      homeAddress: homeAddress.trim() || settings.homeAddress,
+      homeAddress: trimmedHomeAddress,
       startTime,
       endLocation,
-      customEndAddress: endLocation === 'custom' ? customEndAddress.trim() : settings.customEndAddress,
+      customEndAddress: endLocation === 'custom' ? trimmedCustomEndAddress : settings.customEndAddress,
     };
     // Invalidate cached coords if the home address changed so the next
     // optimization re-geocodes.
@@ -2081,11 +2087,15 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
           <div>
             <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">起点（出発地）住所</label>
             <input
-              className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none font-medium"
+              className={cn(
+                "w-full bg-[#1A1D23] border rounded-lg px-3 py-2 text-sm outline-none font-medium",
+                homeAddressError ? "border-red-500/60 focus:border-red-400" : "border-ui focus:border-blue-500/50"
+              )}
               value={homeAddress}
               onChange={(e) => setHomeAddress(e.target.value)}
               placeholder="例: 東京都新宿区新宿1-1-1"
             />
+            {homeAddressError && <p className="text-[10px] text-red-400 mt-1">{homeAddressError}</p>}
           </div>
 
           {/* Departure time */}
@@ -2126,19 +2136,31 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
               ))}
             </div>
             {endLocation === 'custom' && (
-              <input
-                className="mt-2 w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none font-medium"
-                value={customEndAddress}
-                onChange={(e) => setCustomEndAddress(e.target.value)}
-                placeholder="終点の住所"
-              />
+              <>
+                <input
+                  className={cn(
+                    "mt-2 w-full bg-[#1A1D23] border rounded-lg px-3 py-2 text-sm outline-none font-medium",
+                    customEndAddressError ? "border-red-500/60 focus:border-red-400" : "border-ui focus:border-blue-500/50"
+                  )}
+                  value={customEndAddress}
+                  onChange={(e) => setCustomEndAddress(e.target.value)}
+                  placeholder="終点の住所"
+                />
+                {customEndAddressError && <p className="text-[10px] text-red-400 mt-1">{customEndAddressError}</p>}
+              </>
             )}
           </div>
         </div>
 
         <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
            <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">キャンセル</button>
-           <button onClick={handleSave} className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30">設定を反映</button>
+           <button
+             onClick={handleSave}
+             disabled={!canSave}
+             className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+           >
+             設定を反映
+           </button>
         </div>
       </motion.div>
     </motion.div>
