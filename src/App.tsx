@@ -381,6 +381,7 @@ function MainApp() {
   };
 
   const handleOptimizeFromCurrentLocation = () => {
+    if (!validateBeforeOptimize(true)) return;
     if (userPlan === 'free') {
       promptUpgrade('現在地起点での再最適化はPro機能です。外出先からの再計画が一発で完了します。');
       return;
@@ -487,6 +488,64 @@ function MainApp() {
     setVisits(visits.filter(v => v.id !== id));
   };
 
+  const parseHHMM = (value?: string): number | null => {
+    if (!value) return null;
+    const match = value.match(/^(\d{2}):(\d{2})$/);
+    if (!match) return null;
+    const h = Number(match[1]);
+    const m = Number(match[2]);
+    if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+    return h * 60 + m;
+  };
+
+  const getVisitValidation = (visit: Visit): { errors: string[]; warnings: string[] } => {
+    const errors: string[] = [];
+    const warnings: string[] = [];
+    if (!visit.address.trim()) {
+      errors.push('住所を入力してください');
+    }
+    if (visit.timeWindow?.start && visit.timeWindow?.end) {
+      const start = parseHHMM(visit.timeWindow.start);
+      const end = parseHHMM(visit.timeWindow.end);
+      if (start !== null && end !== null && start >= end) {
+        errors.push('訪問時間は開始を終了より前にしてください');
+      }
+    }
+    if (!visit.taskId) {
+      warnings.push('作業未選択です。滞在予定を確認してください');
+    }
+    return { errors, warnings };
+  };
+
+  const validateBeforeOptimize = (usesCurrentLocation = false): boolean => {
+    if (!usesCurrentLocation && !settings.homeAddress.trim()) {
+      showNotice({
+        kind: 'error',
+        title: '起点を確認してください',
+        detail: '起点住所を入力してください。',
+      });
+      return false;
+    }
+    if (settings.endLocation === 'custom' && !settings.customEndAddress?.trim()) {
+      showNotice({
+        kind: 'error',
+        title: '終点を確認してください',
+        detail: '別の終点を使う場合は、終点住所を入力してください。',
+      });
+      return false;
+    }
+    const firstInvalid = visits
+      .map((visit, idx) => ({ idx, validation: getVisitValidation(visit) }))
+      .find(item => item.validation.errors.length > 0);
+    if (!firstInvalid) return true;
+    showNotice({
+      kind: 'error',
+      title: '入力を確認してください',
+      detail: `訪問先${firstInvalid.idx + 1}: ${firstInvalid.validation.errors[0]}`,
+    });
+    return false;
+  };
+
   const applyParsedVisits = (data: any[], sourceLabel: 'text' | 'image') => {
     const newVisits = data.map((v: any) => ({
       id: Math.random().toString(36).substr(2, 9),
@@ -590,6 +649,7 @@ function MainApp() {
 
   const handleOptimize = async (startOverride?: google.maps.LatLngLiteral) => {
     if (visits.length === 0) return;
+    if (!validateBeforeOptimize(Boolean(startOverride))) return;
     setIsOptimizing(true);
     try {
       // 1. Geocode all addresses (if not cached/done)
@@ -886,8 +946,18 @@ function MainApp() {
 
             {/* Visit List */}
             <div className="space-y-3">
-              {visits.map((visit, idx) => (
-                <div key={visit.id} className="bg-card p-4 rounded-xl border border-ui relative group transition-all hover:border-blue-500/30">
+              {visits.map((visit, idx) => {
+                const validation = getVisitValidation(visit);
+                const hasErrors = validation.errors.length > 0;
+                const hasWarnings = !hasErrors && validation.warnings.length > 0;
+                return (
+                <div
+                  key={visit.id}
+                  className={cn(
+                    "bg-card p-4 rounded-xl border relative group transition-all hover:border-blue-500/30",
+                    hasErrors ? "border-red-500/50" : hasWarnings ? "border-yellow-500/30" : "border-ui"
+                  )}
+                >
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex items-center gap-2">
                       <span className="w-6 h-6 rounded-md bg-slate-800 border border-ui flex items-center justify-center text-[10px] font-bold text-blue-400">
@@ -929,6 +999,22 @@ function MainApp() {
                     value={visit.address}
                     onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
                   />
+                  {(validation.errors.length > 0 || validation.warnings.length > 0) && (
+                    <div className="mb-3 space-y-1">
+                      {validation.errors.map(message => (
+                        <p key={message} className="flex items-center gap-1.5 text-[10px] font-bold text-red-300">
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          {message}
+                        </p>
+                      ))}
+                      {validation.warnings.map(message => (
+                        <p key={message} className="flex items-center gap-1.5 text-[10px] font-bold text-yellow-300">
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          {message}
+                        </p>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="flex flex-col gap-3 mt-3">
                      <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
@@ -957,7 +1043,8 @@ function MainApp() {
                      </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
 
               {visits.length < visitLimit ? (
                 <button
