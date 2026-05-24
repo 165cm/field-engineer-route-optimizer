@@ -83,6 +83,59 @@ const TIME_OPTIONS = Array.from({ length: 25 }).map((_, i) => {
   return `${h.toString().padStart(2, '0')}:${m}`;
 });
 
+type PlanScore = {
+  idx: number;
+  plan: RoutePlan;
+  score: number;
+  warningCount: number;
+  violationCount: number;
+  durationPenalty: number;
+  distancePenalty: number;
+  riskPenalty: number;
+};
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function computePlanScores(plans: RoutePlan[]): PlanScore[] {
+  const automaticPlans = plans
+    .map((plan, idx) => ({ plan, idx }))
+    .filter(({ plan }) => plan.id !== 'X');
+  if (automaticPlans.length === 0) return [];
+
+  const minDuration = Math.min(...automaticPlans.map(({ plan }) => plan.totalDurationMin));
+  const minDistance = Math.min(...automaticPlans.map(({ plan }) => plan.totalDistanceKm));
+
+  return automaticPlans.map(({ plan, idx }) => {
+    const warningCount = plan.legs.filter(leg => leg.status === 'warning').length;
+    const violationCount = plan.legs.filter(leg => leg.status === 'violation').length;
+    const durationPenalty = minDuration > 0
+      ? Math.min(25, ((plan.totalDurationMin - minDuration) / minDuration) * 100)
+      : 0;
+    const distancePenalty = minDistance > 0
+      ? Math.min(20, ((plan.totalDistanceKm - minDistance) / minDistance) * 80)
+      : 0;
+    const riskPenalty = Math.min(45, warningCount * 8 + violationCount * 25);
+    return {
+      idx,
+      plan,
+      score: clampScore(100 - durationPenalty - distancePenalty - riskPenalty),
+      warningCount,
+      violationCount,
+      durationPenalty,
+      distancePenalty,
+      riskPenalty,
+    };
+  }).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.violationCount !== b.violationCount) return a.violationCount - b.violationCount;
+    if (a.warningCount !== b.warningCount) return a.warningCount - b.warningCount;
+    if (a.plan.totalDurationMin !== b.plan.totalDurationMin) return a.plan.totalDurationMin - b.plan.totalDurationMin;
+    return a.plan.totalDistanceKm - b.plan.totalDistanceKm;
+  });
+}
+
 function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates: Partial<Visit>) => void }) {
   const { timeWindow } = visit;
   const hasStart = !!timeWindow?.start;
@@ -1254,20 +1307,79 @@ function MainApp() {
                 );
               })()}
 
+              {/* Recommended Plan */}
+              {plans.length > 0 && (() => {
+                const scores = computePlanScores(plans);
+                const recommended = scores[0];
+                if (!recommended) return null;
+                const currentScore = scores.find(s => s.idx === activePlanIdx);
+                return (
+                  <div className="border-b border-ui bg-blue-950/30 px-4 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] uppercase tracking-wider font-bold text-blue-300">おすすめ案</span>
+                          {activePlanIdx === recommended.idx && (
+                            <span className="text-[9px] font-bold text-green-300 bg-green-500/10 border border-green-500/30 rounded px-1.5 py-0.5">
+                              選択中
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-lg font-extrabold text-white">{recommended.plan.label}</span>
+                          <span className="text-2xl font-extrabold num-font text-blue-300">{recommended.score}</span>
+                          <span className="text-xs font-bold text-blue-200/70">/100点</span>
+                        </div>
+                        <p className="text-[10px] text-blue-100/65 mt-1 leading-relaxed">
+                          移動 {recommended.plan.totalDurationMin}分 ・ 距離 {recommended.plan.totalDistanceKm.toFixed(1)}km ・
+                          警告 {recommended.warningCount}件 ・ 超過 {recommended.violationCount}件で評価
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => setActivePlanIdx(recommended.idx)}
+                        className="shrink-0 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-colors disabled:opacity-50"
+                        disabled={activePlanIdx === recommended.idx}
+                      >
+                        表示
+                      </button>
+                    </div>
+                    {currentScore && currentScore.idx !== recommended.idx && (
+                      <p className="text-[10px] text-secondary mt-2">
+                        現在の案: <span className="font-bold text-white">{currentScore.plan.label}</span> {currentScore.score}/100点
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Plan Tabs */}
               <div className="p-4 flex gap-2 border-b border-ui bg-bg/50 backdrop-blur-sm">
-                {plans.map((plan, idx) => (
-                  <button 
-                    key={plan.id}
-                    onClick={() => setActivePlanIdx(idx)}
-                    className={cn(
-                      "flex-1 py-2 text-center text-[10px] font-bold rounded-md transition-all border",
-                      activePlanIdx === idx ? "bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40" : "bg-slate-800 border-ui text-secondary hover:bg-slate-700"
-                    )}
-                  >
-                    {plan.label}
-                  </button>
-                ))}
+                {(() => {
+                  const scores = computePlanScores(plans);
+                  const scoreByIdx = new globalThis.Map(scores.map(score => [score.idx, score]));
+                  const recommendedIdx = scores[0]?.idx;
+                  return plans.map((plan, idx) => {
+                    const score = scoreByIdx.get(idx);
+                    return (
+                      <button
+                        key={plan.id}
+                        onClick={() => setActivePlanIdx(idx)}
+                        className={cn(
+                          "flex-1 py-2 text-center text-[10px] font-bold rounded-md transition-all border",
+                          activePlanIdx === idx ? "bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40" : "bg-slate-800 border-ui text-secondary hover:bg-slate-700",
+                          idx === recommendedIdx && activePlanIdx !== idx && "border-blue-500/50 text-blue-200"
+                        )}
+                      >
+                        <span className="block">{plan.label}</span>
+                        {score && (
+                          <span className="block mt-0.5 text-[9px] opacity-80">
+                            {score.score}点{idx === recommendedIdx ? '・推奨' : ''}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  });
+                })()}
               </div>
 
               {/* Schedule Clock */}
