@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { Visit, RoutePlan, Settings, Difficulty } from './types';
+import { Visit, RoutePlan, Settings, Difficulty, Leg } from './types';
 import { geocodeAddress, getDistanceMatrix } from './services/googleMapsService';
 import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
 import type { DistanceMatrixLike } from './services/googleMapsService';
@@ -98,6 +98,15 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function isCompleteLeg(leg: Leg | undefined): leg is Leg {
+  return Boolean(
+    leg &&
+    typeof leg.arrivalTime === 'string' &&
+    typeof leg.endTime === 'string' &&
+    Number.isFinite(leg.durationMin)
+  );
+}
+
 function computePlanScores(plans: RoutePlan[]): PlanScore[] {
   const automaticPlans = plans
     .map((plan, idx) => ({ plan, idx }))
@@ -108,8 +117,9 @@ function computePlanScores(plans: RoutePlan[]): PlanScore[] {
   const minDistance = Math.min(...automaticPlans.map(({ plan }) => plan.totalDistanceKm));
 
   return automaticPlans.map(({ plan, idx }) => {
-    const warningCount = plan.legs.filter(leg => leg.status === 'warning').length;
-    const violationCount = plan.legs.filter(leg => leg.status === 'violation').length;
+    const legs = plan.legs.filter(isCompleteLeg);
+    const warningCount = legs.filter(leg => leg.status === 'warning').length;
+    const violationCount = legs.filter(leg => leg.status === 'violation').length;
     const durationPenalty = minDuration > 0
       ? Math.min(25, ((plan.totalDurationMin - minDuration) / minDuration) * 100)
       : 0;
@@ -147,8 +157,11 @@ function shiftTime(value: string | undefined, minutes: number): string | undefin
 function insertLunchBreak(plan: RoutePlan, durationMin: number): RoutePlan {
   if (durationMin <= 0 || plan.order.length === 0) return plan;
 
+  const safeLegs = plan.legs.filter(isCompleteLeg);
+  if (safeLegs.length === 0) return plan;
+
   const afterLegIdx = Math.min(plan.order.length - 1, Math.floor(plan.order.length / 2));
-  const afterLeg = plan.legs[afterLegIdx];
+  const afterLeg = safeLegs[afterLegIdx];
   const afterVisit = plan.order[afterLegIdx];
   if (!afterLeg || !afterVisit) return plan;
 
@@ -156,7 +169,7 @@ function insertLunchBreak(plan: RoutePlan, durationMin: number): RoutePlan {
   const lunchEnd = shiftTime(lunchStart, durationMin) || lunchStart;
   const nextPlan: RoutePlan = {
     ...plan,
-    legs: plan.legs.map((leg, idx) => idx <= afterLegIdx ? { ...leg } : {
+    legs: safeLegs.map((leg, idx) => idx <= afterLegIdx ? { ...leg } : {
       ...leg,
       arrivalTime: shiftTime(leg.arrivalTime, durationMin) || leg.arrivalTime,
       workStartTime: shiftTime(leg.workStartTime, durationMin),
@@ -175,7 +188,7 @@ function insertLunchBreak(plan: RoutePlan, durationMin: number): RoutePlan {
 
   nextPlan.legs = nextPlan.legs.map((leg, idx) => {
     if (!leg.visitId || idx <= afterLegIdx) return leg;
-    const visit = nextPlan.order[idx];
+    const visit = nextPlan.order.find(v => v.id === leg.visitId);
     if (!visit?.timeWindow) return leg;
     const arrivalMin = parseTimeMinutes(leg.arrivalTime);
     const start = visit.timeWindow.start ? parseTimeMinutes(visit.timeWindow.start) : null;
@@ -1344,8 +1357,13 @@ function MainApp() {
 
               {/* Path List */}
               <div className="p-4 space-y-3 custom-scrollbar">
-                {plans[activePlanIdx].legs.map((leg, idx) => {
-                  const visit = leg.visitId ? plans[activePlanIdx].order[idx] : null;
+                {plans[activePlanIdx].legs.filter(isCompleteLeg).map((leg, idx) => {
+                  const visit = leg.visitId
+                    ? plans[activePlanIdx].order.find(v => v.id === leg.visitId)
+                    : null;
+                  const visitOrderIndex = visit
+                    ? plans[activePlanIdx].order.findIndex(v => v.id === visit.id) + 1
+                    : idx + 1;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
                   return (
                   <div key={idx} className="relative">
@@ -1373,7 +1391,7 @@ function MainApp() {
                                className="px-2 py-0.5 rounded text-[10px] font-bold num-font text-white"
                                style={{ background: difficultyColor(visit.difficulty).work }}
                              >
-                               {idx + 1}番 {leg.arrivalTime}着
+                               {visitOrderIndex}番 {leg.arrivalTime}着
                              </div>
                              <div className={cn(
                                "status-dot w-2 h-2 rounded-full",
@@ -1440,7 +1458,7 @@ function MainApp() {
                               leg.status === 'ok' ? "text-green-400" : leg.status === 'warning' ? "text-yellow-400" : "text-red-400"
                             )}>
                               {(() => {
-                                const tw = plans[activePlanIdx].order[idx].timeWindow;
+                                const tw = visit.timeWindow;
                                 if (!tw) return "指定なし";
                                 if (tw.start && tw.end) return `${tw.start}-${tw.end}`;
                                 if (tw.start) return `${tw.start} 以降`;
@@ -1451,8 +1469,8 @@ function MainApp() {
                           </div>
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
                             <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">滞在 / 完了</span>
-                            <span className="font-bold">{plans[activePlanIdx].order[idx].workMinutes + 30}分 → {leg.endTime}</span>
-                            <span className="block text-[9px] text-secondary font-medium mt-0.5">準備15+作業{plans[activePlanIdx].order[idx].workMinutes}+撤収15</span>
+                            <span className="font-bold">{visit.workMinutes + 30}分 → {leg.endTime}</span>
+                            <span className="block text-[9px] text-secondary font-medium mt-0.5">準備15+作業{visit.workMinutes}+撤収15</span>
                           </div>
                         </div>
                       </motion.div>

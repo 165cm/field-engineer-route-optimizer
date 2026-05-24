@@ -1,4 +1,4 @@
-import { RoutePlan, Visit, TaskType, Difficulty } from '../types';
+import { RoutePlan, Visit, TaskType, Difficulty, Leg } from '../types';
 import { parseTime, formatTime, PREP_MIN } from '../lib/optimization';
 import { difficultyColor, DIFFICULTY_LABEL } from '../lib/visitColors';
 
@@ -53,13 +53,28 @@ function shortLabel(visit: Visit | undefined, tasks?: TaskType[]): string {
   return town;
 }
 
+function isRenderableLeg(leg: Leg | undefined): leg is Leg {
+  return Boolean(
+    leg &&
+    typeof leg.arrivalTime === 'string' &&
+    typeof leg.endTime === 'string' &&
+    Number.isFinite(leg.durationMin)
+  );
+}
+
+function safeParseTime(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = parseTime(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function buildSegments(plan: RoutePlan, tasks?: TaskType[]): Segment[] {
   const segments: Segment[] = [];
-  const legs = plan.legs;
-  let visitIdx = 0;
+  const legs = plan.legs.filter(isRenderableLeg);
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
-    const arrivalMin = parseTime(leg.arrivalTime);
+    const arrivalMin = safeParseTime(leg.arrivalTime);
+    if (arrivalMin === null) continue;
     const travelStart = arrivalMin - leg.durationMin;
     segments.push({
       kind: 'travel',
@@ -68,30 +83,35 @@ function buildSegments(plan: RoutePlan, tasks?: TaskType[]): Segment[] {
       status: leg.status,
     });
     if (leg.visitId) {
-      const visit = plan.order[visitIdx];
-      visitIdx++;
+      const visit = plan.order.find(v => v.id === leg.visitId);
+      const visitIndex = visit ? plan.order.findIndex(v => v.id === visit.id) + 1 : i + 1;
       const label = shortLabel(visit, tasks);
       const difficulty = visit?.difficulty;
-      const endMin = parseTime(leg.endTime);
+      const endMin = safeParseTime(leg.endTime);
+      if (endMin === null) continue;
       if (leg.workStartTime && leg.workEndTime) {
-        const ws = parseTime(leg.workStartTime);
-        const we = parseTime(leg.workEndTime);
+        const ws = safeParseTime(leg.workStartTime);
+        const we = safeParseTime(leg.workEndTime);
+        if (ws === null || we === null) continue;
         // Prep / cleanup arcs share the visit's difficulty color (lighter
         // shade) so the whole on-site block reads as one coloured group.
-        segments.push({ kind: 'prep', startMin: ws - PREP_MIN, endMin: ws, visitIndex: visitIdx, difficulty });
-        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status, label, visitIndex: visitIdx, difficulty });
-        segments.push({ kind: 'prep', startMin: we, endMin: endMin, visitIndex: visitIdx, difficulty });
+        segments.push({ kind: 'prep', startMin: ws - PREP_MIN, endMin: ws, visitIndex, difficulty });
+        segments.push({ kind: 'work', startMin: ws, endMin: we, status: leg.status, label, visitIndex, difficulty });
+        segments.push({ kind: 'prep', startMin: we, endMin: endMin, visitIndex, difficulty });
       } else {
         // Legacy data: no prep/cleanup info, draw the whole site time as work.
-        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status, label, visitIndex: visitIdx, difficulty });
+        segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status, label, visitIndex, difficulty });
       }
     }
   }
   if (plan.lunchBreak) {
+    const startMin = safeParseTime(plan.lunchBreak.startTime);
+    const endMin = safeParseTime(plan.lunchBreak.endTime);
+    if (startMin === null || endMin === null) return segments;
     segments.push({
       kind: 'lunch',
-      startMin: parseTime(plan.lunchBreak.startTime),
-      endMin: parseTime(plan.lunchBreak.endTime),
+      startMin,
+      endMin,
     });
   }
   return segments;
