@@ -303,6 +303,8 @@ function MainApp() {
   const [inputText, setInputText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
+  const [pendingParsedVisits, setPendingParsedVisits] = useState<Visit[] | null>(null);
+  const [pendingParseSource, setPendingParseSource] = useState<'text' | 'image' | null>(null);
 
   const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
   const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
@@ -546,21 +548,38 @@ function MainApp() {
     return false;
   };
 
-  const applyParsedVisits = (data: any[], sourceLabel: 'text' | 'image') => {
-    const newVisits = data.map((v: any) => ({
+  const normalizeParsedVisits = (data: any[]): Visit[] => {
+    return data.map((v: any) => ({
       id: Math.random().toString(36).substr(2, 9),
-      address: v.address,
+      address: typeof v.address === 'string' ? v.address : '',
       workMinutes: 60,
       difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
-      timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined,
+      timeWindow: v.startTime || v.endTime ? { start: v.startTime || '', end: v.endTime || '' } : undefined,
     }));
-    const merged = [...visits, ...newVisits];
+  };
+
+  const stageParsedVisits = (data: any[], sourceLabel: 'text' | 'image') => {
+    const newVisits = normalizeParsedVisits(data);
+    setPendingParsedVisits(newVisits);
+    setPendingParseSource(sourceLabel);
+  };
+
+  const confirmParsedVisits = (approvedVisits: Visit[]) => {
+    const validVisits = approvedVisits.filter(v => v.address.trim());
+    if (validVisits.length === 0) {
+      showNotice({ kind: 'info', title: '追加できる訪問先がありません', detail: '住所が入っている候補を1件以上残してください。' });
+      return;
+    }
+    const merged = [...visits, ...validVisits];
     if (userPlan === 'free' && merged.length > visitLimit) {
-      const overflow = newVisits.length - (visitLimit - visits.length);
-      const verb = sourceLabel === 'image' ? '画像から' : '読み取った';
-      promptUpgrade(`${verb}${newVisits.length}件のうち${overflow}件が無料枠を超えました。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+      const overflow = validVisits.length - (visitLimit - visits.length);
+      const verb = pendingParseSource === 'image' ? '画像から' : '読み取った';
+      promptUpgrade(`${verb}${validVisits.length}件のうち${overflow}件が無料枠を超えました。Proなら${getVisitLimit('pro')}件まで登録できます。`);
     }
     setVisits(merged.slice(0, visitLimit));
+    if (pendingParseSource === 'text') setInputText('');
+    setPendingParsedVisits(null);
+    setPendingParseSource(null);
   };
 
   const requireAIAccess = (retry: () => void): boolean => {
@@ -601,8 +620,7 @@ function MainApp() {
         data = await response.json();
       }
       if (Array.isArray(data) && data.length > 0) {
-        applyParsedVisits(data, 'text');
-        setInputText('');
+        stageParsedVisits(data, 'text');
       } else {
         showNotice({ kind: 'info', title: 'テキストから訪問先を抽出できませんでした', detail: '住所が含まれているかご確認ください。' });
       }
@@ -634,7 +652,7 @@ function MainApp() {
         data = await response.json();
       }
       if (Array.isArray(data) && data.length > 0) {
-        applyParsedVisits(data, 'image');
+        stageParsedVisits(data, 'image');
       } else {
         showNotice({ kind: 'info', title: '画像から訪問先を抽出できませんでした', detail: '別の角度で撮影、または明るい場所で撮り直してみてください。' });
       }
@@ -1646,6 +1664,21 @@ function MainApp() {
         )}
       </AnimatePresence>
 
+      {/* AI Parsed Visits Review Modal */}
+      <AnimatePresence>
+        {pendingParsedVisits && (
+          <ParsedVisitsReviewModal
+            visits={pendingParsedVisits}
+            onChange={setPendingParsedVisits}
+            onConfirm={confirmParsedVisits}
+            onClose={() => {
+              setPendingParsedVisits(null);
+              setPendingParseSource(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
       {/* AI Unlock Modal (demo only) */}
       <AnimatePresence>
         {showAIUnlock && (
@@ -1729,6 +1762,132 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function ParsedVisitsReviewModal({
+  visits,
+  onChange,
+  onConfirm,
+  onClose,
+}: {
+  visits: Visit[];
+  onChange: (visits: Visit[]) => void;
+  onConfirm: (visits: Visit[]) => void;
+  onClose: () => void;
+}) {
+  const updateVisit = (id: string, updates: Partial<Visit>) => {
+    onChange(visits.map(v => {
+      if (v.id !== id) return v;
+      const next = { ...v, ...updates };
+      if (updates.address !== undefined && updates.address !== v.address) {
+        next.coords = undefined;
+      }
+      return next;
+    }));
+  };
+  const removeVisit = (id: string) => onChange(visits.filter(v => v.id !== id));
+  const validCount = visits.filter(v => v.address.trim()).length;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        className="bg-card w-full max-w-lg flex flex-col max-h-[88vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-4 border-b border-ui flex justify-between items-start bg-slate-900">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2">
+              <ClipboardList className="w-4 h-4 text-blue-400" /> 読み取り結果の確認
+            </h2>
+            <p className="text-[11px] text-secondary mt-1">住所・時間・難易度だけを確認して追加します。</p>
+          </div>
+          <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+          {visits.length === 0 ? (
+            <div className="py-8 text-center text-sm text-secondary">追加する候補がありません</div>
+          ) : visits.map((visit, idx) => {
+            const missingAddress = !visit.address.trim();
+            return (
+              <div key={visit.id} className={cn(
+                "rounded-xl border p-3 bg-slate-900/35",
+                missingAddress ? "border-red-500/50" : "border-ui"
+              )}>
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-6 h-6 rounded-md bg-slate-800 border border-ui flex items-center justify-center text-[10px] font-bold text-blue-400">
+                      {idx + 1}
+                    </span>
+                    <span className="text-xs font-bold text-gray-200">訪問先候補</span>
+                  </div>
+                  <button
+                    onClick={() => removeVisit(visit.id)}
+                    className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded"
+                    title="候補から外す"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <textarea
+                  className={cn(
+                    "w-full bg-[#1A1D23] border rounded-lg p-3 text-xs resize-none outline-none transition-colors",
+                    missingAddress ? "border-red-500/60 focus:border-red-400" : "border-ui focus:border-blue-500/50"
+                  )}
+                  placeholder="住所を確認・修正"
+                  rows={2}
+                  value={visit.address}
+                  onChange={(e) => updateVisit(visit.id, { address: e.target.value })}
+                />
+                {missingAddress && (
+                  <p className="flex items-center gap-1.5 text-[10px] font-bold text-red-300 mt-1.5">
+                    <AlertTriangle className="w-3 h-3 shrink-0" />
+                    住所を入力してください
+                  </p>
+                )}
+
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+                  <div className="bg-slate-800/50 p-2.5 rounded border border-ui">
+                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                      <Clock className="w-3.5 h-3.5" /> 訪問時間
+                    </span>
+                    <TimeWindowInput visit={visit} onChange={(u) => updateVisit(visit.id, u)} />
+                  </div>
+                  <div className="bg-slate-800/50 p-2.5 rounded border border-ui flex flex-col gap-2 justify-between">
+                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">難易度</span>
+                    <DifficultySelector value={visit.difficulty} onChange={(d) => updateVisit(visit.id, { difficulty: d })} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
+          <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">
+            キャンセル
+          </button>
+          <button
+            onClick={() => onConfirm(visits)}
+            disabled={validCount === 0}
+            className="flex-[1.6] py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {validCount}件を追加
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
