@@ -97,8 +97,8 @@ async function startServer() {
       if (!text) return res.status(400).json({ error: "Text is required" });
 
       const prompt = `以下のテキストから、家電修理の訪問先情報を抽出してJSON形式で返してください。
-1行に1件とは限りません。住所、時間指定（あれば）、作業メモ（用件・作業内容）などを読み取ってください。
-個人名（顧客名）は個人情報保護のため抽出しないでください。メモ欄に名前が含まれていても省略してください。
+1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを読み取ってください。
+個人名（顧客名）や作業メモ・用件は抽出しないでください。
 最大5件まで。
 
 テキスト:
@@ -108,7 +108,6 @@ ${text}
 [
   {
     "address": "住所",
-    "memo": "用件・作業メモ（個人名は含めない）",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。文脈から推測して。デフォルト2)"
@@ -126,12 +125,11 @@ ${text}
               type: Type.OBJECT,
               properties: {
                 address: { type: Type.STRING },
-                memo: { type: Type.STRING },
                 startTime: { type: Type.STRING, nullable: true },
                 endTime: { type: Type.STRING, nullable: true },
                 difficulty: { type: Type.INTEGER }
               },
-              required: ["address", "memo", "difficulty"]
+              required: ["address", "difficulty"]
             }
           }
         }
@@ -154,15 +152,14 @@ ${text}
       if (!image) return res.status(400).json({ error: "Image is required" });
 
       const prompt = `この画像（修理伝票やリストのスクリーンショット）から、家電修理の訪問先情報を抽出してJSON形式で返してください。
-住所、時間指定、作業メモ（用件・作業内容）などを可能な限り読み取ってください。
-個人名（顧客名）は個人情報保護のため抽出しないでください。画像に名前が写っていてもJSONには含めないでください。
+ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを可能な限り読み取ってください。
+個人名（顧客名）や作業メモ・用件は抽出しないでください。
 最大5件まで。
 
 出力は以下の配列形式にしてください。
 [
   {
     "address": "住所",
-    "memo": "用件・作業メモ（個人名は含めない）",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。内容から推測して。デフォルト2)"
@@ -193,12 +190,11 @@ ${text}
               type: Type.OBJECT,
               properties: {
                 address: { type: Type.STRING },
-                memo: { type: Type.STRING },
                 startTime: { type: Type.STRING, nullable: true },
                 endTime: { type: Type.STRING, nullable: true },
                 difficulty: { type: Type.INTEGER }
               },
-              required: ["address", "memo", "difficulty"]
+              required: ["address", "difficulty"]
             }
           }
         }

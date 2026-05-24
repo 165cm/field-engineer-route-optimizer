@@ -8,9 +8,7 @@ export type TimeWindow = {
 export type Visit = {
   id: string;
   address: string;
-  customerName?: string;
   taskId?: string;
-  memo?: string;
   timeWindow?: TimeWindow;
   workMinutes: number; // default 60
   difficulty: Difficulty; // 1=Easy, 2=Normal, 3=Hard

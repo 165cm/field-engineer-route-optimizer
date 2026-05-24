@@ -226,7 +226,17 @@ function MainApp() {
   
   const [visits, setVisits] = useState<Visit[]>(() => {
     const saved = localStorage.getItem('repair_visits');
-    return saved ? JSON.parse(saved) : [];
+    const parsed = saved ? JSON.parse(saved) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((v: any) => ({
+      id: v.id,
+      address: v.address || '',
+      taskId: v.taskId,
+      timeWindow: v.timeWindow,
+      workMinutes: Number(v.workMinutes) || 60,
+      difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
+      coords: v.coords,
+    }));
   });
 
   const [plans, setPlans] = useState<RoutePlan[]>([]);
@@ -326,9 +336,9 @@ function MainApp() {
 
   const handleLoadSampleAndOptimize = () => {
     const sample: Visit[] = [
-      { id: 's1', address: '東京都新宿区西新宿2-8-1', memo: '冷蔵庫の冷えが弱い', workMinutes: 60, difficulty: 2 },
-      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', memo: '洗濯機 異音', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
-      { id: 's3', address: '東京都港区六本木6-10-1', memo: 'エアコン設置', workMinutes: 90, difficulty: 3 },
+      { id: 's1', address: '東京都新宿区西新宿2-8-1', taskId: '1', workMinutes: 30, difficulty: 2 },
+      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', taskId: '2', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
+      { id: 's3', address: '東京都港区六本木6-10-1', taskId: '3', workMinutes: 90, difficulty: 3 },
     ];
     setVisits(sample);
     dismissOnboarding();
@@ -481,8 +491,6 @@ function MainApp() {
     const newVisits = data.map((v: any) => ({
       id: Math.random().toString(36).substr(2, 9),
       address: v.address,
-      // customerName intentionally not copied from AI-parsed data (privacy).
-      memo: v.memo,
       workMinutes: 60,
       difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
       timeWindow: v.startTime && v.endTime ? { start: v.startTime, end: v.endTime } : undefined,
@@ -922,14 +930,6 @@ function MainApp() {
                     onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
                   />
 
-                  <textarea
-                    className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-xs resize-none focus:border-blue-500/50 transition-colors"
-                    placeholder="作業メモ（例: 冷蔵庫の冷えが弱い / 個人名は入力しない）"
-                    rows={2}
-                    value={visit.memo || ''}
-                    onChange={(e) => handleUpdateVisit(visit.id, { memo: e.target.value })}
-                  />
-
                   <div className="flex flex-col gap-3 mt-3">
                      <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
                         <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
@@ -1271,20 +1271,12 @@ function MainApp() {
                           {(() => {
                             const task = settings.tasks.find(t => t.id === visit.taskId);
                             if (task) return task.name;
-                            return visit.memo?.slice(0, 30) || '訪問先';
+                            return '訪問先';
                           })()}
                         </h3>
                         <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
                           {visit.address}
                         </p>
-                        {visit.memo && (
-                          <p className={cn(
-                            "text-[11px] mb-3 rounded-lg border border-ui bg-slate-800/40 px-2.5 py-2 leading-relaxed",
-                            isCompleted ? "text-secondary line-through" : "text-gray-300"
-                          )}>
-                            {visit.memo}
-                          </p>
-                        )}
 
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
