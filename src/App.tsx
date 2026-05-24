@@ -922,6 +922,14 @@ function MainApp() {
                     onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
                   />
 
+                  <textarea
+                    className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-xs resize-none focus:border-blue-500/50 transition-colors"
+                    placeholder="作業メモ（例: 冷蔵庫の冷えが弱い / 個人名は入力しない）"
+                    rows={2}
+                    value={visit.memo || ''}
+                    onChange={(e) => handleUpdateVisit(visit.id, { memo: e.target.value })}
+                  />
+
                   <div className="flex flex-col gap-3 mt-3">
                      <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
                         <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
@@ -1269,6 +1277,14 @@ function MainApp() {
                         <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
                           {visit.address}
                         </p>
+                        {visit.memo && (
+                          <p className={cn(
+                            "text-[11px] mb-3 rounded-lg border border-ui bg-slate-800/40 px-2.5 py-2 leading-relaxed",
+                            isCompleted ? "text-secondary line-through" : "text-gray-300"
+                          )}>
+                            {visit.memo}
+                          </p>
+                        )}
 
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
