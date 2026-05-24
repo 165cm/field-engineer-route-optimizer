@@ -317,8 +317,6 @@ function MainApp() {
       ...parsed,
       startTime: parsed.startTime || '09:00',
       lunchBreakMinutes: [0, 15, 30, 45, 60].includes(parsedLunchBreak) ? parsedLunchBreak : 0,
-      lunchSpotIds: [],
-      savedLunchSpots: [],
       tasks: parsed.tasks || [
         { id: '1', name: '点検', defaultMinutes: 30 },
         { id: '2', name: '修理', defaultMinutes: 60 },
@@ -1122,7 +1120,7 @@ function MainApp() {
                   return (
                     <button
                       key={minutes}
-                      onClick={() => setSettings({ ...settings, lunchBreakMinutes: minutes, lunchSpotIds: [], savedLunchSpots: [] })}
+                      onClick={() => setSettings({ ...settings, lunchBreakMinutes: minutes })}
                       className={cn(
                         "py-2 rounded-lg border text-xs font-bold transition-all",
                         selected

@@ -28,13 +28,6 @@ export type Leg = {
   visitId?: string; // null for start/end points
 };
 
-export type LunchSpotPreference = {
-  id: string;
-  name: string;
-  query: string;
-  icon: string;
-};
-
 export type TaskType = {
   id: string;
   name: string;
@@ -49,18 +42,7 @@ export type Settings = {
   customEndAddress?: string;
   customEndCoords?: google.maps.LatLngLiteral;
   lunchBreakMinutes?: number; // 0, 15, 30, 45, 60 — inserted around route midpoint
-  lunchSpotIds?: string[];
-  savedLunchSpots?: LunchSpotPreference[];
   tasks: TaskType[];
-};
-
-export type LunchInfo = {
-  name: string;
-  address: string;
-  rating?: number;
-  location?: google.maps.LatLngLiteral;
-  type: string;
-  icon?: string;
 };
 
 export type RoutePlan = {

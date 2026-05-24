@@ -278,58 +278,6 @@ ${text}
     }
   });
 
-  app.post("/api/places/search", async (req, res) => {
-    try {
-      if (!MAPS_KEY) return res.status(500).json({ error: "Maps key not configured" });
-      const { textQuery, center, maxResultCount } = req.body ?? {};
-      if (typeof textQuery !== "string" || !textQuery.trim()) {
-        return res.status(400).json({ error: "textQuery is required" });
-      }
-      if (!center || typeof center.lat !== "number" || typeof center.lng !== "number") {
-        return res.status(400).json({ error: "center {lat,lng} is required" });
-      }
-      const limit = Math.max(1, Math.min(10, Number(maxResultCount) || 5));
-      const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Goog-Api-Key": MAPS_KEY,
-          "X-Goog-FieldMask":
-            "places.displayName,places.location,places.formattedAddress,places.rating",
-        },
-        body: JSON.stringify({
-          textQuery,
-          maxResultCount: limit,
-          locationBias: {
-            rectangle: {
-              low: { latitude: center.lat - 0.03, longitude: center.lng - 0.03 },
-              high: { latitude: center.lat + 0.03, longitude: center.lng + 0.03 },
-            },
-          },
-          languageCode: "ja",
-        }),
-      });
-      if (!r.ok) {
-        const txt = await r.text();
-        console.error("Places API non-OK:", r.status, txt);
-        return res.status(502).json({ error: "Places search failed" });
-      }
-      const data = await r.json() as any;
-      const places = (data.places || []).map((p: any) => ({
-        displayName: p.displayName?.text || "",
-        formattedAddress: p.formattedAddress || "",
-        rating: typeof p.rating === "number" ? p.rating : undefined,
-        location: p.location
-          ? { lat: p.location.latitude, lng: p.location.longitude }
-          : undefined,
-      }));
-      res.json({ places });
-    } catch (error) {
-      console.error("Places Search Error:", error);
-      res.status(500).json({ error: "Places search failed" });
-    }
-  });
-
   // Vite integration
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");

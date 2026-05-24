@@ -1,4 +1,3 @@
-import { LunchInfo } from "../types";
 import { isDemoMode } from "../lib/demoMode";
 
 // Maps Platform billable calls route through one of two paths:
@@ -139,73 +138,4 @@ export async function geocodeAddress(address: string): Promise<google.maps.LatLn
   cache[key] = { coords, ts: Date.now() };
   writeGeocodeCache(cache);
   return coords;
-}
-
-// ----------------------------------------------------------------------------
-// Places — lunch search
-// ----------------------------------------------------------------------------
-
-type PlacesSearchResponse = {
-  places: {
-    displayName: string;
-    formattedAddress: string;
-    rating?: number;
-    location?: google.maps.LatLngLiteral;
-  }[];
-};
-
-async function findLunchSpotsViaSdk(
-  location: google.maps.LatLngLiteral,
-  query: string,
-  limit: number
-): Promise<PlacesSearchResponse['places']> {
-  const { Place } = (await google.maps.importLibrary("places")) as any;
-  const response = await Place.searchByText({
-    textQuery: query,
-    fields: ['displayName', 'location', 'formattedAddress', 'rating'],
-    locationRestriction: {
-      north: location.lat + 0.03,
-      south: location.lat - 0.03,
-      east: location.lng + 0.03,
-      west: location.lng - 0.03,
-    },
-    maxResultCount: limit,
-  });
-  if (!response.places) return [];
-  return response.places.map((p: any) => ({
-    displayName: p.displayName || '',
-    formattedAddress: p.formattedAddress || '',
-    rating: p.rating ?? undefined,
-    location: p.location ? { lat: p.location.lat(), lng: p.location.lng() } : undefined,
-  }));
-}
-
-export async function findLunchSpots(
-  location: google.maps.LatLngLiteral,
-  query: string,
-  limit: number = 5,
-  icon: string = '🍔'
-): Promise<LunchInfo[]> {
-  if (!query) return [];
-  try {
-    const places = isDemoMode()
-      ? await findLunchSpotsViaSdk(location, query, limit)
-      : (await postJSON<PlacesSearchResponse>("/api/places/search", {
-          textQuery: query,
-          center: location,
-          maxResultCount: limit,
-        })).places;
-
-    return (places || []).map(p => ({
-      name: p.displayName || '昼食',
-      address: p.formattedAddress || '',
-      rating: p.rating,
-      location: p.location,
-      type: query,
-      icon,
-    }));
-  } catch (error) {
-    console.error("Places API Error:", error);
-    return [];
-  }
 }
