@@ -48,8 +48,9 @@ export type Settings = {
   endLocation: 'home' | 'none' | 'custom';
   customEndAddress?: string;
   customEndCoords?: google.maps.LatLngLiteral;
+  lunchBreakMinutes?: number; // 0, 15, 30, 45, 60 — inserted around route midpoint
   lunchSpotIds?: string[];
-  savedLunchSpots: LunchSpotPreference[];
+  savedLunchSpots?: LunchSpotPreference[];
   tasks: TaskType[];
 };
 
@@ -70,5 +71,10 @@ export type RoutePlan = {
   totalDurationMin: number;
   totalDistanceKm: number;
   endTime: string;
-  lunchCandidates?: LunchInfo[];
+  lunchBreak?: {
+    afterVisitId: string;
+    startTime: string;
+    endTime: string;
+    durationMin: number;
+  };
 };

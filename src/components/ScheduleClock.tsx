@@ -20,7 +20,6 @@ const SIZE = 300;
 const CENTER = SIZE / 2;
 const RADIUS = 96;
 const STROKE = 18;
-const LUNCH_GAP_THRESHOLD_MIN = 30;
 
 const COLORS: Record<SegmentKind, string> = {
   travel: '#3b82f6',
@@ -87,14 +86,13 @@ function buildSegments(plan: RoutePlan, tasks?: TaskType[]): Segment[] {
         segments.push({ kind: 'work', startMin: arrivalMin, endMin: endMin, status: leg.status, label, visitIndex: visitIdx, difficulty });
       }
     }
-    const next = legs[i + 1];
-    if (next) {
-      const gapStart = parseTime(leg.endTime);
-      const gapEnd = parseTime(next.arrivalTime) - next.durationMin;
-      if (gapEnd - gapStart >= LUNCH_GAP_THRESHOLD_MIN) {
-        segments.push({ kind: 'lunch', startMin: gapStart, endMin: gapEnd });
-      }
-    }
+  }
+  if (plan.lunchBreak) {
+    segments.push({
+      kind: 'lunch',
+      startMin: parseTime(plan.lunchBreak.startTime),
+      endMin: parseTime(plan.lunchBreak.endTime),
+    });
   }
   return segments;
 }

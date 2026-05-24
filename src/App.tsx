@@ -35,8 +35,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { Visit, RoutePlan, Settings, Difficulty, LunchSpotPreference, LunchInfo } from './types';
-import { geocodeAddress, getDistanceMatrix, findLunchSpots } from './services/googleMapsService';
+import { Visit, RoutePlan, Settings, Difficulty } from './types';
+import { geocodeAddress, getDistanceMatrix } from './services/googleMapsService';
 import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
 import type { DistanceMatrixLike } from './services/googleMapsService';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
@@ -136,6 +136,64 @@ function computePlanScores(plans: RoutePlan[]): PlanScore[] {
   });
 }
 
+function shiftTime(value: string | undefined, minutes: number): string | undefined {
+  if (!value) return value;
+  const [h, m] = value.split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return value;
+  const total = h * 60 + m + minutes;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function insertLunchBreak(plan: RoutePlan, durationMin: number): RoutePlan {
+  if (durationMin <= 0 || plan.order.length === 0) return plan;
+
+  const afterLegIdx = Math.min(plan.order.length - 1, Math.floor(plan.order.length / 2));
+  const afterLeg = plan.legs[afterLegIdx];
+  const afterVisit = plan.order[afterLegIdx];
+  if (!afterLeg || !afterVisit) return plan;
+
+  const lunchStart = afterLeg.endTime;
+  const lunchEnd = shiftTime(lunchStart, durationMin) || lunchStart;
+  const nextPlan: RoutePlan = {
+    ...plan,
+    legs: plan.legs.map((leg, idx) => idx <= afterLegIdx ? { ...leg } : {
+      ...leg,
+      arrivalTime: shiftTime(leg.arrivalTime, durationMin) || leg.arrivalTime,
+      workStartTime: shiftTime(leg.workStartTime, durationMin),
+      workEndTime: shiftTime(leg.workEndTime, durationMin),
+      endTime: shiftTime(leg.endTime, durationMin) || leg.endTime,
+    }),
+    totalDurationMin: plan.totalDurationMin,
+    endTime: shiftTime(plan.endTime, durationMin) || plan.endTime,
+    lunchBreak: {
+      afterVisitId: afterVisit.id,
+      startTime: lunchStart,
+      endTime: lunchEnd,
+      durationMin,
+    },
+  };
+
+  nextPlan.legs = nextPlan.legs.map((leg, idx) => {
+    if (!leg.visitId || idx <= afterLegIdx) return leg;
+    const visit = nextPlan.order[idx];
+    if (!visit?.timeWindow) return leg;
+    const arrivalMin = parseTimeMinutes(leg.arrivalTime);
+    const start = visit.timeWindow.start ? parseTimeMinutes(visit.timeWindow.start) : null;
+    const end = visit.timeWindow.end ? parseTimeMinutes(visit.timeWindow.end) : null;
+    let status: 'ok' | 'warning' | 'violation' = 'ok';
+    if (end !== null && arrivalMin > end) status = 'violation';
+    else if ((end !== null && arrivalMin > end - 30) || (start !== null && arrivalMin < start)) status = 'warning';
+    return { ...leg, status };
+  });
+
+  return nextPlan;
+}
+
+function parseTimeMinutes(value: string): number {
+  const [h, m] = value.split(':').map(Number);
+  return h * 60 + m;
+}
+
 function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates: Partial<Visit>) => void }) {
   const { timeWindow } = visit;
   const hasStart = !!timeWindow?.start;
@@ -228,47 +286,26 @@ export default function App() {
   }
 
   return (
-    <APIProvider apiKey={API_KEY} version="weekly" language="ja" libraries={['places', 'routes', 'geometry']}>
+    <APIProvider apiKey={API_KEY} version="weekly" language="ja" libraries={['routes', 'geometry']}>
       <MainApp />
     </APIProvider>
   );
 }
 
 function MainApp() {
-  const defaultLunchSpots: LunchSpotPreference[] = [
-    { id: 'mcdonalds', name: 'マクドナルド', query: 'マクドナルド', icon: '🍔' },
-    { id: 'yoshinoya', name: '吉野家', query: '吉野家', icon: '🍚' },
-    { id: 'sukiya', name: 'すき家', query: 'すき家', icon: '🐮' },
-    { id: 'matsuya', name: '松屋', query: '松屋', icon: '🍛' },
-    { id: 'yudetaro', name: 'ゆで太郎', query: 'ゆで太郎', icon: '🍜' },
-    { id: 'seven_eleven', name: 'セブン-イレブン', query: 'セブンイレブン', icon: '🏪' },
-    { id: 'family_mart', name: 'ファミリーマート', query: 'ファミリーマート', icon: '🏪' },
-    { id: 'lawson', name: 'ローソン', query: 'ローソン', icon: '🏪' },
-  ];
-
   const [settings, setSettings] = useState<Settings>(() => {
     const saved = localStorage.getItem('repair_settings');
     const parsed = saved ? JSON.parse(saved) : {};
-    let savedSpots: LunchSpotPreference[] = parsed.savedLunchSpots?.length ? parsed.savedLunchSpots : defaultLunchSpots;
-
-    // Filter out 'none' if it exists in saved
-    savedSpots = savedSpots.filter(s => s.id !== 'none');
-
-    // Ensure new convenience stores are added to existing saved spots
-    const spotIds = new Set(savedSpots.map(s => s.id));
-    if (!spotIds.has('seven_eleven') && !spotIds.has('convenience')) {
-      savedSpots.push(...defaultLunchSpots.filter(d => ['seven_eleven', 'family_mart', 'lawson'].includes(d.id)));
-    }
-    // Remove the old 'convenience' if it exists since we replaced it with specific chains
-    savedSpots = savedSpots.filter(s => s.id !== 'convenience');
+    const parsedLunchBreak = Number(parsed.lunchBreakMinutes);
 
     return {
       homeAddress: '東京都新宿区新宿1-1-1',
       endLocation: 'home',
       ...parsed,
       startTime: parsed.startTime || '09:00',
-      lunchSpotIds: parsed.lunchSpotIds || (parsed.lunchSpotId && parsed.lunchSpotId !== 'none' ? [parsed.lunchSpotId] : []),
-      savedLunchSpots: savedSpots,
+      lunchBreakMinutes: [0, 15, 30, 45, 60].includes(parsedLunchBreak) ? parsedLunchBreak : 0,
+      lunchSpotIds: [],
+      savedLunchSpots: [],
       tasks: parsed.tasks || [
         { id: '1', name: '点検', defaultMinutes: 30 },
         { id: '2', name: '修理', defaultMinutes: 60 },
@@ -334,7 +371,10 @@ function MainApp() {
     const orderIndices = nextOrder
       .map(id => ctx.visits.findIndex(v => v.id === id) + 1)
       .filter(i => i > 0);
-    const next = calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X');
+    const next = insertLunchBreak(
+      calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X'),
+      ctx.settings.lunchBreakMinutes || 0
+    );
     setPlans(prev => prev.map((p, i) => (i === 3 ? next : p)));
   };
 
@@ -348,9 +388,7 @@ function MainApp() {
     setCustomOrder(next);
     recomputeCustomPlan(next);
   };
-  const [selectedLunchCandidates, setSelectedLunchCandidates] = useState<Record<number, number>>({});
   const [isOptimizing, setIsOptimizing] = useState(false);
-  const [showLunchSettings, setShowLunchSettings] = useState(false);
   const [showTasksSettings, setShowTasksSettings] = useState(false);
   const [showStartEndSettings, setShowStartEndSettings] = useState(false);
   const [inputText, setInputText] = useState('');
@@ -422,7 +460,9 @@ function MainApp() {
       setSettings(updatedSettings);
       const points = [updatedSettings.homeCoords || updatedSettings.homeAddress, ...updatedVisits.map(v => v.coords || v.address)];
       const matrix = await getDistanceMatrix(points, points);
-      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix).map(plan =>
+        insertLunchBreak(plan, updatedSettings.lunchBreakMinutes || 0)
+      );
       setBaseline(computeInputOrderBaseline(updatedVisits, updatedSettings, matrix));
       setPlans(optimizedPlans);
       setActiveTab('result');
@@ -765,14 +805,17 @@ function MainApp() {
       // Seed the manual ("カスタム") plan with the best automatic order so the
       // user has a sensible starting point to nudge from.
       const customSeed = optimizedPlans[0].order.map(v => v.id);
-      const customPlan = calculatePlanForOrder(
-        updatedVisits,
-        updatedSettings,
-        matrix,
-        customSeed
-          .map(id => updatedVisits.findIndex(v => v.id === id) + 1)
-          .filter(i => i > 0),
-        'X',
+      const customPlan = insertLunchBreak(
+        calculatePlanForOrder(
+          updatedVisits,
+          updatedSettings,
+          matrix,
+          customSeed
+            .map(id => updatedVisits.findIndex(v => v.id === id) + 1)
+            .filter(i => i > 0),
+          'X',
+        ),
+        updatedSettings.lunchBreakMinutes || 0
       );
       optimizedPlans.push(customPlan);
       // Persist context for later re-computation when the user reorders.
@@ -780,99 +823,6 @@ function MainApp() {
       setCustomOrder(customSeed);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
-
-      // 4. Fetch Lunch Spots if requested
-      // Consolidate Places API calls: search ONCE per category at the average midpoint
-      // across all plans, then share results across plans. This cuts Places API costs
-      // roughly by the number of plans (3x reduction in best case).
-      if (updatedSettings.lunchSpotIds && updatedSettings.lunchSpotIds.length > 0) {
-        const activeSpots = updatedSettings.savedLunchSpots.filter(s => updatedSettings.lunchSpotIds?.includes(s.id));
-
-        const computeMidpoint = (plan: RoutePlan): google.maps.LatLngLiteral | null => {
-          if (plan.order.length === 0) return null;
-          const lunchIdx = Math.floor(plan.order.length / 2);
-          const v1 = plan.order[lunchIdx];
-          let v2Coords = v1?.coords;
-          if (lunchIdx + 1 < plan.order.length) {
-            v2Coords = plan.order[lunchIdx + 1].coords;
-          } else if (updatedSettings.endLocation === 'home') {
-            v2Coords = updatedSettings.homeCoords;
-          } else if (updatedSettings.endLocation === 'custom') {
-            v2Coords = updatedSettings.customEndCoords;
-          }
-          if (v1?.coords && v2Coords) {
-            return {
-              lat: (v1.coords.lat + v2Coords.lat) / 2,
-              lng: (v1.coords.lng + v2Coords.lng) / 2,
-            };
-          }
-          if (v1?.coords) return v1.coords;
-          return updatedSettings.homeCoords || null;
-        };
-
-        // Average all plan midpoints into one shared search point.
-        const planMidpoints = optimizedPlans.map(computeMidpoint).filter((m): m is google.maps.LatLngLiteral => !!m);
-        const sharedMidpoint: google.maps.LatLngLiteral | null = planMidpoints.length > 0
-          ? {
-              lat: planMidpoints.reduce((s, p) => s + p.lat, 0) / planMidpoints.length,
-              lng: planMidpoints.reduce((s, p) => s + p.lng, 0) / planMidpoints.length,
-            }
-          : null;
-
-        let sharedCandidates: LunchInfo[] = [];
-        if (sharedMidpoint) {
-          const limitPerCategory = Math.max(1, Math.ceil(5 / Math.max(1, activeSpots.length)));
-          for (const spotPref of activeSpots) {
-            if (spotPref.query) {
-              const infos = await findLunchSpots(sharedMidpoint, spotPref.query, limitPerCategory, spotPref.icon);
-              sharedCandidates.push(...infos);
-            }
-          }
-          sharedCandidates = sharedCandidates.slice(0, 5);
-        }
-
-        const parseTime = (t: string) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
-        const formatTime = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-        const LUNCH_MIN = 60;
-
-        for (const plan of optimizedPlans) {
-          if (plan.order.length === 0 || sharedCandidates.length === 0) continue;
-          plan.lunchCandidates = sharedCandidates;
-          plan.totalDurationMin += LUNCH_MIN;
-
-          const lunchIdx = Math.floor(plan.order.length / 2);
-          for (let i = lunchIdx + 1; i < plan.legs.length; i++) {
-            if (plan.legs[i].arrivalTime) {
-              plan.legs[i].arrivalTime = formatTime(parseTime(plan.legs[i].arrivalTime) + LUNCH_MIN);
-            }
-            if (plan.legs[i].workStartTime) {
-              plan.legs[i].workStartTime = formatTime(parseTime(plan.legs[i].workStartTime!) + LUNCH_MIN);
-            }
-            if (plan.legs[i].workEndTime) {
-              plan.legs[i].workEndTime = formatTime(parseTime(plan.legs[i].workEndTime!) + LUNCH_MIN);
-            }
-            if (plan.legs[i].endTime) {
-              plan.legs[i].endTime = formatTime(parseTime(plan.legs[i].endTime) + LUNCH_MIN);
-            }
-            if (i - 1 < plan.order.length) {
-              const visit = plan.order[i - 1];
-              if (visit?.timeWindow) {
-                const hasStart = !!visit.timeWindow.start;
-                const hasEnd = !!visit.timeWindow.end;
-                const start = hasStart ? parseTime(visit.timeWindow.start) : null;
-                const end = hasEnd ? parseTime(visit.timeWindow.end) : null;
-                const arr = parseTime(plan.legs[i].arrivalTime);
-                if (end !== null && arr > end) plan.legs[i].status = 'violation';
-                else if (
-                  (end !== null && arr > end - 30) ||
-                  (start !== null && arr < start)
-                ) plan.legs[i].status = 'warning';
-              }
-            }
-          }
-          plan.endTime = formatTime(parseTime(plan.endTime) + LUNCH_MIN);
-        }
-      }
 
       setPlans(optimizedPlans);
       setCompletedVisitIds(new Set());
@@ -1143,51 +1093,38 @@ function MainApp() {
               )}
             </div>
 
-            {/* Lunch Settings */}
+            {/* Lunch Break Settings */}
             <div className="bg-card p-4 rounded-xl border border-ui mt-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <Utensils className="w-4 h-4 text-orange-400" />
                   <h3 className="text-xs font-bold text-secondary uppercase tracking-tight">
-                    ランチ・休憩 (訪問後半で立ち寄り)
+                    ランチ・休憩時間
                   </h3>
                 </div>
-                <button 
-                  onClick={() => setShowLunchSettings(true)}
-                  className="text-[10px] bg-slate-800 text-blue-400 hover:text-blue-300 font-bold px-2 py-1 rounded border border-ui"
-                >
-                  お気に入り編集
-                </button>
               </div>
-              <div className="flex flex-wrap gap-2 pt-1 pb-1">
-                {settings.savedLunchSpots.map(spot => {
-                  const isSelected = settings.lunchSpotIds?.includes(spot.id);
+              <div className="grid grid-cols-5 gap-2">
+                {[0, 15, 30, 45, 60].map(minutes => {
+                  const selected = (settings.lunchBreakMinutes || 0) === minutes;
                   return (
                     <button
-                      key={spot.id}
-                      onClick={() => {
-                        const current = settings.lunchSpotIds || [];
-                        const next = isSelected 
-                          ? current.filter(id => id !== spot.id)
-                          : [...current, spot.id];
-                        setSettings({ ...settings, lunchSpotIds: next });
-                      }}
+                      key={minutes}
+                      onClick={() => setSettings({ ...settings, lunchBreakMinutes: minutes, lunchSpotIds: [], savedLunchSpots: [] })}
                       className={cn(
-                        "flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all text-xs font-bold",
-                        isSelected 
-                          ? "bg-orange-500/20 border-orange-500/50 text-orange-300" 
+                        "py-2 rounded-lg border text-xs font-bold transition-all",
+                        selected
+                          ? "bg-orange-500/20 border-orange-500/50 text-orange-200"
                           : "bg-slate-800/50 border-ui text-secondary hover:bg-slate-800 hover:text-white"
                       )}
                     >
-                      <span className="text-sm drop-shadow-sm">{spot.icon}</span>
-                      <span className="truncate">{spot.name}</span>
+                      {minutes === 0 ? 'なし' : `${minutes}分`}
                     </button>
                   );
                 })}
               </div>
-              {settings.lunchSpotIds && settings.lunchSpotIds.length > 0 && (
-                <p className="text-[9px] text-slate-500 mt-2 font-medium">※ルート後半の移動ルート上で、指定した店舗を提案します。</p>
-              )}
+              <p className="text-[9px] text-slate-500 mt-2 font-medium">
+                店舗検索は使わず、ルート中盤に指定した休憩時間だけを挿入します。
+              </p>
             </div>
 
             {/* AI Input — voice/camera/text */}
@@ -1392,7 +1329,7 @@ function MainApp() {
               {!isDesktop && (
                 <>
                   <div className="h-[360px] relative border-b border-ui bg-bg">
-                    <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
+                    <MapComponent plan={plans[activePlanIdx]} settings={settings} />
                   </div>
                   <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
                     <div className="flex items-center gap-3">
@@ -1536,8 +1473,8 @@ function MainApp() {
                       </div>
                     )}
 
-                    {/* Lunch Injection */}
-                    {plans[activePlanIdx].lunchCandidates && plans[activePlanIdx].lunchCandidates!.length > 0 && idx === Math.floor(plans[activePlanIdx].order.length / 2) && leg.visitId && (
+                    {/* Lunch Break Injection */}
+                    {plans[activePlanIdx].lunchBreak?.afterVisitId === leg.visitId && (
                        <div className="relative mt-3">
                          <div className="h-4 flex items-center justify-center absolute -top-4 left-0 right-0">
                            <div className="w-px h-full bg-slate-800" />
@@ -1545,55 +1482,20 @@ function MainApp() {
                          <motion.div 
                            initial={{ opacity: 0, y: 10 }}
                            animate={{ opacity: 1, y: 0 }}
-                           className="bg-orange-500/10 p-4 rounded-xl border border-orange-500/30"
+                            className="bg-orange-500/10 p-4 rounded-xl border border-orange-500/30"
                          >
-                            <div className="flex items-center gap-2 mb-3 text-orange-400">
+                            <div className="flex items-center gap-2 text-orange-400">
                                <Utensils className="w-3.5 h-3.5" />
-                               <span className="text-[10px] font-bold uppercase tracking-widest">昼食休憩の提案 (約60分) - {plans[activePlanIdx].lunchCandidates!.length}候補</span>
+                               <span className="text-[10px] font-bold uppercase tracking-widest">
+                                 昼食・休憩 {plans[activePlanIdx].lunchBreak!.durationMin}分
+                               </span>
                             </div>
-                            <div className="flex flex-col gap-2">
-                              {plans[activePlanIdx].lunchCandidates!.map((candidate, i) => {
-                                const isSelected = selectedLunchCandidates[activePlanIdx] === i;
-                                const hasSelection = selectedLunchCandidates[activePlanIdx] !== undefined;
-
-                                return (
-                                  <div 
-                                    key={i} 
-                                    onClick={() => setSelectedLunchCandidates(prev => ({ ...prev, [activePlanIdx]: isSelected ? undefined : i }))}
-                                    className={cn(
-                                      "flex justify-between items-center p-2 rounded-lg border relative cursor-pointer outline-none transition-all",
-                                      isSelected 
-                                        ? "bg-orange-900/40 border-orange-500 shadow-md shadow-orange-900/30 ring-2 ring-orange-500/50" 
-                                        : hasSelection 
-                                          ? "bg-slate-800/30 border-slate-700/50 opacity-50 grayscale hover:opacity-80" 
-                                          : "bg-orange-900/20 border-orange-500/20 hover:bg-orange-900/30"
-                                    )}
-                                  >
-                                    <div className="flex-1 min-w-0 pr-3">
-                                      <h3 className="text-sm font-bold text-orange-100 flex items-center gap-2 flex-wrap">
-                                        <span className="text-base shrink-0">{candidate.icon || '🍔'}</span>
-                                        <span className="truncate">{candidate.name}</span>
-                                        {candidate.rating && (
-                                          <span className="text-[10px] text-yellow-500 font-bold flex items-center gap-0.5 shrink-0">
-                                            ★ {candidate.rating}
-                                          </span>
-                                        )}
-                                      </h3>
-                                      <p className="text-[10px] text-orange-200/60 mt-0.5 truncate">{candidate.address}</p>
-                                    </div>
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(candidate.name + ' ' + candidate.address)}`, '_blank');
-                                      }}
-                                      className="p-2 bg-orange-500/20 hover:bg-orange-500/30 rounded-lg transition-colors text-orange-300 shrink-0 relative z-10"
-                                    >
-                                      <MapPin className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
+                            <p className="text-xs font-bold text-orange-100 mt-2 num-font">
+                              {plans[activePlanIdx].lunchBreak!.startTime} - {plans[activePlanIdx].lunchBreak!.endTime}
+                            </p>
+                            <p className="text-[10px] text-orange-200/60 mt-1">
+                              店舗検索は使わず、時間だけをスケジュールに挿入しています。
+                            </p>
                          </motion.div>
                        </div>
                     )}
@@ -1634,10 +1536,6 @@ function MainApp() {
                       return;
                     }
                     let ways = [...remaining.map(v => v.address)];
-                    if (plan.lunchCandidates && plan.lunchCandidates.length > 0) {
-                      const selectedIdx = selectedLunchCandidates[activePlanIdx] ?? 0;
-                      ways.splice(Math.floor(remaining.length / 2) + 1, 0, plan.lunchCandidates[selectedIdx].address);
-                    }
                     const waypoints = ways.map(w => encodeURIComponent(w)).join('/');
                     const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : remaining[remaining.length - 1].address);
                     window.open(`https://www.google.com/maps/dir/${encodeURIComponent(settings.homeAddress)}/${waypoints}/${encodeURIComponent(dest || '')}`, '_blank');
@@ -1656,7 +1554,7 @@ function MainApp() {
             {isDesktop && (
               <section className="hidden lg:flex w-full lg:h-full lg:flex-1 relative bg-bg overflow-hidden shrink-0 flex-col">
                 <div className="absolute inset-0 z-0 flex">
-                  <MapComponent plan={plans[activePlanIdx]} settings={settings} selectedLunchIdx={selectedLunchCandidates[activePlanIdx]} />
+                  <MapComponent plan={plans[activePlanIdx]} settings={settings} />
                 </div>
 
                 {/* Floating totals on the map */}
@@ -1828,20 +1726,6 @@ function MainApp() {
           <OnboardingModal
             onTrySample={handleLoadSampleAndOptimize}
             onClose={dismissOnboarding}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Lunch Spots Edit Modal */}
-      <AnimatePresence>
-        {showLunchSettings && (
-          <LunchSpotsModal 
-            settings={settings}
-            onSave={(val) => {
-              setSettings(val);
-              setShowLunchSettings(false);
-            }}
-            onClose={() => setShowLunchSettings(false)}
           />
         )}
       </AnimatePresence>
@@ -2201,111 +2085,6 @@ function StatusBadge({ status }: { status: 'ok' | 'warning' | 'violation' }) {
   if (status === 'ok') return <Badge variant="success" className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> OK</Badge>;
   if (status === 'warning') return <Badge variant="warning" className="flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> ギリギリ</Badge>;
   return <Badge variant="danger" className="flex items-center gap-1"><XCircle className="w-3 h-3" /> 超過</Badge>;
-}
-
-function LunchSpotsModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
-  const [spots, setSpots] = useState(settings.savedLunchSpots || []);
-  const [newName, setNewName] = useState('');
-  const [newIcon, setNewIcon] = useState('🍔');
-  const [newQuery, setNewQuery] = useState('');
-
-  const handleAdd = () => {
-    if (!newName) return;
-    const q = newQuery || newName;
-    setSpots([...spots, { id: Date.now().toString(), name: newName, query: q, icon: newIcon }]);
-    setNewName('');
-    setNewQuery('');
-  };
-
-  const handleRemove = (id: string) => {
-    if (id === 'none') return;
-    setSpots(spots.filter(s => s.id !== id));
-  };
-
-  const handleSave = () => {
-    let newSpotIds = settings.lunchSpotIds || [];
-    newSpotIds = newSpotIds.filter(id => spots.find(s => s.id === id));
-    onSave({ ...settings, savedLunchSpots: spots, lunchSpotIds: newSpotIds });
-  };
-
-  return (
-    <motion.div 
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-    >
-      <motion.div 
-        initial={{ scale: 0.95 }}
-        animate={{ scale: 1 }}
-        exit={{ scale: 0.95 }}
-        className="bg-card w-full max-w-md flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
-      >
-        <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
-          <h2 className="text-sm font-bold text-white flex items-center gap-2"><Utensils className="w-4 h-4"/>お気に入りランチの編集</h2>
-          <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
-           {spots.map(spot => (
-             <div key={spot.id} className="flex justify-between items-center bg-slate-800/50 p-3 rounded-xl border border-ui">
-                <div className="flex items-center gap-3">
-                  <span className="text-2xl drop-shadow-md">{spot.icon}</span>
-                  <div>
-                    <h4 className="text-sm font-bold text-white">{spot.name}</h4>
-                    {spot.id !== 'none' && <p className="text-[10px] text-secondary mt-0.5">検索: {spot.query}</p>}
-                  </div>
-                </div>
-                {spot.id !== 'none' && (
-                  <button onClick={() => handleRemove(spot.id)} className="p-2 text-red-400 hover:text-red-300 bg-red-400/10 hover:bg-red-400/20 rounded-lg transition-colors">
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-             </div>
-           ))}
-
-           <div className="mt-6 border-t border-ui pt-4">
-             <h4 className="text-xs font-bold text-secondary uppercase tracking-widest mb-3">新規追加</h4>
-             <div className="flex gap-2 mb-2">
-               <input 
-                 className="w-16 bg-[#1A1D23] border border-ui rounded-lg px-2 py-2 text-center text-xl focus:border-blue-500/50 outline-none"
-                 value={newIcon}
-                 onChange={(e) => setNewIcon(e.target.value)}
-                 placeholder="🍔"
-                 maxLength={2}
-               />
-               <input 
-                 className="flex-1 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none placeholder:text-slate-600 font-bold"
-                 value={newName}
-                 onChange={(e) => setNewName(e.target.value)}
-                 placeholder="お店の名前 (例: ラーメン二郎)"
-               />
-             </div>
-             <div className="flex gap-2">
-               <input 
-                 className="flex-1 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs focus:border-blue-500/50 outline-none placeholder:text-slate-600"
-                 value={newQuery}
-                 onChange={(e) => setNewQuery(e.target.value)}
-                 placeholder="検索用キーワード (任意: デフォルトは '店名')"
-               />
-               <button 
-                 onClick={handleAdd}
-                 disabled={!newName}
-                 className="px-4 py-2 bg-blue-600 disabled:opacity-50 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg"
-               >
-                 追加
-               </button>
-             </div>
-           </div>
-        </div>
-
-        <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
-           <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">キャンセル</button>
-           <button onClick={handleSave} className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30">設定を反映</button>
-        </div>
-      </motion.div>
-    </motion.div>
-  );
 }
 
 function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
@@ -2668,7 +2447,7 @@ const MAP_MODE_CONFIG: Record<MapMode, { mapTypeId: string; colorScheme: 'DARK' 
   satellite: { mapTypeId: 'hybrid',  colorScheme: 'DARK',  label: '航空写真' },
 };
 
-function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, settings: Settings, selectedLunchIdx: number | undefined }) {
+function MapComponent({ plan, settings }: { plan: RoutePlan, settings: Settings }) {
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const [mapMode, setMapMode] = useState<MapMode>(() => {
@@ -2797,7 +2576,7 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
     };
   }, [map, routesLib, plan, settings]);
 
-  // Fit all pins (home, visits, custom end, lunch candidates) with ~1.3x margin.
+  // Fit all pins (home, visits, custom end) with ~1.3x margin.
   useEffect(() => {
     if (!map) return;
     const points: google.maps.LatLngLiteral[] = [];
@@ -2806,7 +2585,6 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
       points.push(settings.customEndCoords);
     }
     plan.order.forEach(v => { if (v.coords) points.push(v.coords); });
-    plan.lunchCandidates?.forEach(s => { if (s.location) points.push(s.location); });
     if (points.length === 0) return;
 
     const bounds = new google.maps.LatLngBounds();
@@ -2858,19 +2636,6 @@ function MapComponent({ plan, settings, selectedLunchIdx }: { plan: RoutePlan, s
             </AdvancedMarker>
           )
         ))}
-        {plan.lunchCandidates?.map((spot, i) => {
-          if (!spot.location) return null;
-          const isSelected = selectedLunchIdx === undefined || selectedLunchIdx === i;
-          return (
-            <AdvancedMarker key={`lunch-${i}`} position={spot.location}>
-               <div className={cn("w-8 h-8 rounded-full border-2 border-white flex justify-center items-center text-sm z-50 transition-all", 
-                 isSelected ? "bg-orange-500 shadow-[0_0_15px_rgba(249,115,22,0.8)] opacity-100" : "bg-slate-500 shadow-none opacity-40 grayscale"
-               )}>
-                 {spot.icon || '🍔'}
-               </div>
-            </AdvancedMarker>
-          );
-        })}
       </Map>
       {/* Map mode toggle */}
       <div className="absolute top-3 right-3 z-10 flex items-center bg-slate-900/85 backdrop-blur-sm border border-ui rounded-lg overflow-hidden shadow-xl">
