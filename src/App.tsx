@@ -246,6 +246,37 @@ function parseTimeMinutes(value: string): number {
   return h * 60 + m;
 }
 
+function formatMapsPoint(address?: string, coords?: google.maps.LatLngLiteral): string {
+  const lat = Number(coords?.lat);
+  const lng = Number(coords?.lng);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    return `${lat.toFixed(7)},${lng.toFixed(7)}`;
+  }
+  return (address || '').trim();
+}
+
+function buildGoogleMapsDirectionsUrl({
+  origin,
+  destination,
+  waypoints = [],
+}: {
+  origin?: string;
+  destination: string;
+  waypoints?: string[];
+}): string {
+  const params = new URLSearchParams({
+    api: '1',
+    destination,
+    travelmode: 'driving',
+  });
+  if (origin) params.set('origin', origin);
+  const validWaypoints = waypoints.filter(Boolean);
+  if (validWaypoints.length > 0) {
+    params.set('waypoints', validWaypoints.join('|'));
+  }
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
 function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates: Partial<Visit>) => void }) {
   const { timeWindow } = visit;
   const hasStart = !!timeWindow?.start;
@@ -1473,7 +1504,14 @@ function MainApp() {
                               <CheckCircle2 className="w-4 h-4" />
                             </button>
                             <button
-                              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(visit.address)}`, '_blank')}
+                              onClick={() => {
+                                const destination = formatMapsPoint(visit.address, visit.coords);
+                                window.open(
+                                  buildGoogleMapsDirectionsUrl({ destination }),
+                                  '_blank',
+                                  'noopener,noreferrer'
+                                );
+                              }}
                               title="この訪問先にナビ"
                               className="p-1.5 hover:bg-blue-500/10 rounded"
                             >
@@ -1596,10 +1634,22 @@ function MainApp() {
                       showNotice({ kind: 'success', title: '本日の訪問はすべて完了しました', detail: 'お疲れさまでした！' });
                       return;
                     }
-                    let ways = [...remaining.map(v => v.address)];
-                    const waypoints = ways.map(w => encodeURIComponent(w)).join('/');
-                    const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : remaining[remaining.length - 1].address);
-                    window.open(`https://www.google.com/maps/dir/${encodeURIComponent(settings.homeAddress)}/${waypoints}/${encodeURIComponent(dest || '')}`, '_blank');
+                    const origin = formatMapsPoint(settings.homeAddress, settings.homeCoords);
+                    const destinationVisit = remaining[remaining.length - 1];
+                    const destination = settings.endLocation === 'home'
+                      ? formatMapsPoint(settings.homeAddress, settings.homeCoords)
+                      : settings.endLocation === 'custom'
+                        ? formatMapsPoint(settings.customEndAddress, settings.customEndCoords)
+                        : formatMapsPoint(destinationVisit.address, destinationVisit.coords);
+                    const waypointVisits = settings.endLocation === 'none'
+                      ? remaining.slice(0, -1)
+                      : remaining;
+                    const waypoints = waypointVisits.map(v => formatMapsPoint(v.address, v.coords));
+                    window.open(
+                      buildGoogleMapsDirectionsUrl({ origin, destination, waypoints }),
+                      '_blank',
+                      'noopener,noreferrer'
+                    );
                   }}
                   className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-extrabold text-sm shadow-xl shadow-blue-900/30 flex items-center justify-center gap-3 transition-colors active:scale-[0.98]"
                 >
