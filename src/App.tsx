@@ -889,6 +889,9 @@ function MainApp() {
     }
   };
 
+  const displayPlans = plans.map(normalizeRoutePlan);
+  const activePlan = displayPlans[activePlanIdx];
+
   return (
     <div className="bg-bg text-gray-200 min-h-screen font-sans border-ui overflow-x-hidden pb-20">
       {/* Demo banner */}
@@ -956,7 +959,7 @@ function MainApp() {
       </nav>
 
       <AnimatePresence mode="wait">
-        {activeTab === 'input' ? (
+        {activeTab === 'input' || !activePlan ? (
           <motion.div 
             key="input"
             initial={{ opacity: 0, y: 20 }}
@@ -1255,11 +1258,11 @@ function MainApp() {
             {/* Sidebar (Route List). Full-width on mobile, fixed 420px on desktop. */}
             <aside className="w-full lg:w-[420px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl lg:overflow-y-auto custom-scrollbar">
               {/* Savings Banner */}
-              {baseline && plans[activePlanIdx] && (() => {
+              {baseline && (() => {
                 const FUEL_KM_PER_L = 12;
                 const GAS_YEN_PER_L = 180;
-                const planDist = plans[activePlanIdx].totalDistanceKm;
-                const planDur = plans[activePlanIdx].totalDurationMin;
+                const planDist = activePlan.totalDistanceKm;
+                const planDur = activePlan.totalDurationMin;
                 const savedKm = Math.max(0, baseline.totalDistanceKm - planDist);
                 const savedMin = Math.max(0, baseline.totalDurationMin - planDur);
                 const savedYen = Math.round((savedKm / FUEL_KM_PER_L) * GAS_YEN_PER_L);
@@ -1297,8 +1300,8 @@ function MainApp() {
               })()}
 
               {/* Recommended Plan */}
-              {plans.length > 0 && (() => {
-                const scores = computePlanScores(plans);
+              {displayPlans.length > 0 && (() => {
+                const scores = computePlanScores(displayPlans);
                 const recommended = scores[0];
                 if (!recommended) return null;
                 const currentScore = scores.find(s => s.idx === activePlanIdx);
@@ -1344,10 +1347,10 @@ function MainApp() {
               {/* Plan Tabs */}
               <div className="p-4 flex gap-2 border-b border-ui bg-bg/50 backdrop-blur-sm">
                 {(() => {
-                  const scores = computePlanScores(plans);
+                  const scores = computePlanScores(displayPlans);
                   const scoreByIdx = new globalThis.Map(scores.map(score => [score.idx, score]));
                   const recommendedIdx = scores[0]?.idx;
-                  return plans.map((plan, idx) => {
+                  return displayPlans.map((plan, idx) => {
                     const score = scoreByIdx.get(idx);
                     return (
                       <button
@@ -1373,7 +1376,7 @@ function MainApp() {
 
               {/* Schedule Clock */}
               <div className="px-4 pt-4 pb-3 border-b border-ui">
-                <ScheduleClock plan={plans[activePlanIdx]} tasks={settings.tasks} />
+                <ScheduleClock plan={activePlan} tasks={settings.tasks} />
               </div>
 
               {/* Mobile-only: map directly under the schedule clock.
@@ -1381,7 +1384,7 @@ function MainApp() {
               {!isDesktop && (
                 <>
                   <div className="h-[360px] relative border-b border-ui bg-bg">
-                    <MapComponent plan={plans[activePlanIdx]} settings={settings} />
+                    <MapComponent plan={activePlan} settings={settings} />
                   </div>
                   <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
                     <div className="flex items-center gap-3">
@@ -1389,19 +1392,20 @@ function MainApp() {
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#fbbf24]" /><span className="font-bold text-gray-300">余裕少</span></span>
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_#f87171]" /><span className="font-bold text-gray-300">遅延懸念</span></span>
                     </div>
-                    <span className="text-secondary italic">案: {plans[activePlanIdx].label}</span>
+                    <span className="text-secondary italic">案: {activePlan.label}</span>
                   </div>
                 </>
               )}
 
               {/* Path List */}
               <div className="p-4 space-y-3 custom-scrollbar">
-                {plans[activePlanIdx].legs.filter(isCompleteLeg).map((leg, idx) => {
+                {activePlan.legs.filter(isCompleteLeg).map((leg, idx) => {
+                  const lunchBreak = activePlan.lunchBreak;
                   const visit = leg.visitId
-                    ? plans[activePlanIdx].order.find(v => v.id === leg.visitId)
+                    ? activePlan.order.find(v => v.id === leg.visitId)
                     : null;
                   const visitOrderIndex = visit
-                    ? plans[activePlanIdx].order.findIndex(v => v.id === visit.id) + 1
+                    ? activePlan.order.findIndex(v => v.id === visit.id) + 1
                     : idx + 1;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
                   return (
@@ -1438,7 +1442,7 @@ function MainApp() {
                              )} />
                           </div>
                           <div className="flex gap-1">
-                            {plans[activePlanIdx].id === 'X' && (
+                            {activePlan.id === 'X' && (
                               <>
                                 <button
                                   onClick={() => moveCustomVisit(visit.id, -1)}
@@ -1531,7 +1535,7 @@ function MainApp() {
                     )}
 
                     {/* Lunch Break Injection */}
-                    {plans[activePlanIdx].lunchBreak?.afterVisitId === leg.visitId && (
+                    {lunchBreak && lunchBreak.afterVisitId === leg.visitId && (
                        <div className="relative mt-3">
                          <div className="h-4 flex items-center justify-center absolute -top-4 left-0 right-0">
                            <div className="w-px h-full bg-slate-800" />
@@ -1544,11 +1548,11 @@ function MainApp() {
                             <div className="flex items-center gap-2 text-orange-400">
                                <Utensils className="w-3.5 h-3.5" />
                                <span className="text-[10px] font-bold uppercase tracking-widest">
-                                 昼食・休憩 {plans[activePlanIdx].lunchBreak!.durationMin}分
+                                 昼食・休憩 {lunchBreak.durationMin}分
                                </span>
                             </div>
                             <p className="text-xs font-bold text-orange-100 mt-2 num-font">
-                              {plans[activePlanIdx].lunchBreak!.startTime} - {plans[activePlanIdx].lunchBreak!.endTime}
+                              {lunchBreak.startTime} - {lunchBreak.endTime}
                             </p>
                             <p className="text-[10px] text-orange-200/60 mt-1">
                               店舗検索は使わず、時間だけをスケジュールに挿入しています。
@@ -1563,9 +1567,9 @@ function MainApp() {
 
               {/* Bottom CTA */}
               <div className="p-4 border-t border-ui glass space-y-3">
-                {plans[activePlanIdx].order.length > 0 && (() => {
-                  const total = plans[activePlanIdx].order.length;
-                  const done = plans[activePlanIdx].order.filter(v => completedVisitIds.has(v.id)).length;
+                {activePlan.order.length > 0 && (() => {
+                  const total = activePlan.order.length;
+                  const done = activePlan.order.filter(v => completedVisitIds.has(v.id)).length;
                   const pct = total > 0 ? (done / total) * 100 : 0;
                   return (
                     <div>
@@ -1585,7 +1589,7 @@ function MainApp() {
 
                 <button
                   onClick={() => {
-                    const plan = plans[activePlanIdx];
+                    const plan = activePlan;
                     // Skip already-completed visits in the external map handoff
                     const remaining = plan.order.filter(v => !completedVisitIds.has(v.id));
                     if (remaining.length === 0) {
@@ -1611,7 +1615,7 @@ function MainApp() {
             {isDesktop && (
               <section className="hidden lg:flex w-full lg:h-full lg:flex-1 relative bg-bg overflow-hidden shrink-0 flex-col">
                 <div className="absolute inset-0 z-0 flex">
-                  <MapComponent plan={plans[activePlanIdx]} settings={settings} />
+                  <MapComponent plan={activePlan} settings={settings} />
                 </div>
 
                 {/* Floating totals on the map */}
@@ -1619,15 +1623,15 @@ function MainApp() {
                   <div className="glass p-4 rounded-2xl border border-ui shadow-2xl flex gap-8">
                     <div className="flex flex-col">
                       <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動時間</span>
-                      <span className="text-2xl num-font">{plans[activePlanIdx].totalDurationMin}<span className="text-xs font-normal text-secondary ml-1">min</span></span>
+                      <span className="text-2xl num-font">{activePlan.totalDurationMin}<span className="text-xs font-normal text-secondary ml-1">min</span></span>
                     </div>
                     <div className="flex flex-col">
                       <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動距離</span>
-                      <span className="text-2xl num-font">{plans[activePlanIdx].totalDistanceKm.toFixed(1)}<span className="text-xs font-normal text-secondary ml-1">km</span></span>
+                      <span className="text-2xl num-font">{activePlan.totalDistanceKm.toFixed(1)}<span className="text-xs font-normal text-secondary ml-1">km</span></span>
                     </div>
                     <div className="flex flex-col">
                       <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">最終完了予定</span>
-                      <span className="text-2xl num-font text-blue-400">{plans[activePlanIdx].endTime}</span>
+                      <span className="text-2xl num-font text-blue-400">{activePlan.endTime}</span>
                     </div>
                   </div>
                 </div>
@@ -1639,7 +1643,7 @@ function MainApp() {
                     <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-yellow-400 shadow-[0_0_8px_#fbbf24]" /><span className="text-xs font-bold text-gray-300">余裕少</span></div>
                     <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]" /><span className="text-xs font-bold text-gray-300">遅延懸念</span></div>
                   </div>
-                  <div className="text-xs text-secondary italic">案: {plans[activePlanIdx].label}</div>
+                  <div className="text-xs text-secondary italic">案: {activePlan.label}</div>
                 </div>
               </section>
             )}
