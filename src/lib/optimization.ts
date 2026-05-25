@@ -1,8 +1,12 @@
 import { Visit, RoutePlan, Settings, Leg } from "../types";
 import type { DistanceMatrixLike } from "../services/googleMapsService";
 
+type MatrixElementLike = DistanceMatrixLike["rows"][number]["elements"][number];
+
 export function parseTime(timeStr: string): number {
+  if (typeof timeStr !== "string") return 0;
   const [h, m] = timeStr.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return 0;
   return h * 60 + m;
 }
 
@@ -36,9 +40,9 @@ export function computeInputOrderBaseline(
   let totalDistance = 0;
   let prev = 0;
   for (let i = 1; i <= visitCount; i++) {
-    const el = matrix.rows[prev]?.elements[i];
-    totalDuration += Math.ceil((el?.duration?.value || 0) / 60);
-    totalDistance += (el?.distance?.value || 0) / 1000;
+    const el = getMatrixElement(matrix, prev, i);
+    totalDuration += getTravelTimeMin(el);
+    totalDistance += getTravelDistanceKm(el);
     prev = i;
   }
   let endIdx = prev;
@@ -46,9 +50,9 @@ export function computeInputOrderBaseline(
   else if (settings.endLocation === 'custom') endIdx = visitCount + 1;
 
   if (settings.endLocation !== 'none') {
-    const el = matrix.rows[prev]?.elements[endIdx];
-    totalDuration += Math.ceil((el?.duration?.value || 0) / 60);
-    totalDistance += (el?.distance?.value || 0) / 1000;
+    const el = getMatrixElement(matrix, prev, endIdx);
+    totalDuration += getTravelTimeMin(el);
+    totalDistance += getTravelDistanceKm(el);
   }
   return { totalDurationMin: totalDuration, totalDistanceKm: totalDistance };
 }
@@ -61,6 +65,18 @@ const PLAN_LABELS: Record<PlanId, string> = {
   C: '確実',
   X: 'カスタム',
 };
+
+function getMatrixElement(matrix: DistanceMatrixLike, fromIdx: number, toIdx: number): MatrixElementLike {
+  return matrix.rows[fromIdx]?.elements?.[toIdx] || {};
+}
+
+function getTravelTimeMin(element: MatrixElementLike): number {
+  return Math.max(0, Math.ceil((element.duration?.value || 0) / 60));
+}
+
+function getTravelDistanceKm(element: MatrixElementLike): number {
+  return Math.max(0, (element.distance?.value || 0) / 1000);
+}
 
 /**
  * Compute a full RoutePlan (legs, totals, end-of-day time) for a given visit
@@ -88,9 +104,10 @@ export function calculatePlanForOrder(
   let prevIdx = 0;
   for (const currIdx of orderIndices) {
     const visit = visits[currIdx - 1];
-    const distData = matrix.rows[prevIdx].elements[currIdx];
-    const travelTime = Math.ceil((distData.duration?.value || 0) / 60);
-    const travelDist = (distData.distance?.value || 0) / 1000;
+    if (!visit) continue;
+    const distData = getMatrixElement(matrix, prevIdx, currIdx);
+    const travelTime = getTravelTimeMin(distData);
+    const travelDist = getTravelDistanceKm(distData);
 
     currentMinutes += travelTime;
     const arrivalTime = formatTime(currentMinutes);
@@ -146,9 +163,9 @@ export function calculatePlanForOrder(
   else if (settings.endLocation === 'custom') endIdx = visitCount + 1;
 
   if (settings.endLocation !== 'none' && orderIndices.length > 0) {
-    const distData = matrix.rows[prevIdx].elements[endIdx];
-    const travelTime = Math.ceil((distData.duration?.value || 0) / 60);
-    const travelDist = (distData.distance?.value || 0) / 1000;
+    const distData = getMatrixElement(matrix, prevIdx, endIdx);
+    const travelTime = getTravelTimeMin(distData);
+    const travelDist = getTravelDistanceKm(distData);
     currentMinutes += travelTime;
     totalDuration += travelTime;
     totalDistance += travelDist;
@@ -198,6 +215,7 @@ export function optimizeRoutes(
 
   const allPlans = permutations.map(p => {
     const plan = calculatePlanForOrder(visits, settings, matrix, p, 'A');
+    const legByVisitId = new Map(plan.legs.filter(l => l.visitId).map(l => [l.visitId, l]));
 
     const violations = plan.legs.filter(l => l.status === 'violation').length;
     const warnings = plan.legs.filter(l => l.status === 'warning').length;
@@ -206,8 +224,10 @@ export function optimizeRoutes(
     const scoreA = plan.totalDurationMin + penalty;
 
     let centeringDiff = 0;
-    plan.order.forEach((v, i) => {
-      const arrival = parseTime(plan.legs[i].arrivalTime);
+    plan.order.forEach(v => {
+      const leg = legByVisitId.get(v.id);
+      if (!leg) return;
+      const arrival = parseTime(leg.arrivalTime);
       if (v.timeWindow) {
         const hasStart = !!v.timeWindow.start;
         const hasEnd = !!v.timeWindow.end;
@@ -228,7 +248,9 @@ export function optimizeRoutes(
     plan.order.forEach((v, i) => {
       const rank = i + 1;
       difficultyOrderPenalty += v.difficulty * rank * 5;
-      const endTime = parseTime(plan.legs[i].endTime);
+      const leg = legByVisitId.get(v.id);
+      if (!leg) return;
+      const endTime = parseTime(leg.endTime);
       if (v.difficulty === 1 && endTime <= 12 * 60) {
         easyBeforeNoonBonus -= 20;
       }
