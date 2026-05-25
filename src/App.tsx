@@ -98,7 +98,7 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function isCompleteLeg(leg: Leg | undefined): leg is Leg {
+function isCompleteLeg(leg: Leg | undefined | null): leg is Leg {
   return Boolean(
     leg &&
     typeof leg.arrivalTime === 'string' &&
@@ -107,9 +107,47 @@ function isCompleteLeg(leg: Leg | undefined): leg is Leg {
   );
 }
 
+function normalizeLeg(raw: Partial<Leg> | undefined | null): Leg | null {
+  if (!raw || typeof raw.arrivalTime !== 'string' || typeof raw.endTime !== 'string') {
+    return null;
+  }
+  const durationMin = Number(raw.durationMin);
+  const distanceKm = Number(raw.distanceKm);
+  return {
+    fromName: raw.fromName || '',
+    toName: raw.toName || '',
+    durationMin: Number.isFinite(durationMin) ? durationMin : 0,
+    distanceKm: Number.isFinite(distanceKm) ? distanceKm : 0,
+    arrivalTime: raw.arrivalTime,
+    workStartTime: raw.workStartTime,
+    workEndTime: raw.workEndTime,
+    endTime: raw.endTime,
+    status: raw.status === 'warning' || raw.status === 'violation' ? raw.status : 'ok',
+    visitId: raw.visitId,
+  };
+}
+
+function normalizeRoutePlan(plan: RoutePlan): RoutePlan {
+  const totalDurationMin = Number(plan.totalDurationMin);
+  const totalDistanceKm = Number(plan.totalDistanceKm);
+  const lunchDuration = Number(plan.lunchBreak?.durationMin);
+  return {
+    ...plan,
+    order: Array.isArray(plan.order) ? plan.order : [],
+    legs: (Array.isArray(plan.legs) ? plan.legs : [])
+      .map(leg => normalizeLeg(leg))
+      .filter((leg): leg is Leg => leg !== null),
+    totalDurationMin: Number.isFinite(totalDurationMin) ? totalDurationMin : 0,
+    totalDistanceKm: Number.isFinite(totalDistanceKm) ? totalDistanceKm : 0,
+    lunchBreak: plan.lunchBreak && Number.isFinite(lunchDuration)
+      ? { ...plan.lunchBreak, durationMin: lunchDuration }
+      : undefined,
+  };
+}
+
 function computePlanScores(plans: RoutePlan[]): PlanScore[] {
   const automaticPlans = plans
-    .map((plan, idx) => ({ plan, idx }))
+    .map((plan, idx) => ({ plan: normalizeRoutePlan(plan), idx }))
     .filter(({ plan }) => plan.id !== 'X');
   if (automaticPlans.length === 0) return [];
 
@@ -154,10 +192,11 @@ function shiftTime(value: string | undefined, minutes: number): string | undefin
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function insertLunchBreak(plan: RoutePlan, durationMin: number): RoutePlan {
+function insertLunchBreak(rawPlan: RoutePlan, durationMin: number): RoutePlan {
+  const plan = normalizeRoutePlan(rawPlan);
   if (durationMin <= 0 || plan.order.length === 0) return plan;
 
-  const safeLegs = plan.legs.filter(isCompleteLeg);
+  const safeLegs = plan.legs;
   if (safeLegs.length === 0) return plan;
 
   const afterLegIdx = Math.min(plan.order.length - 1, Math.floor(plan.order.length / 2));
@@ -473,7 +512,7 @@ function MainApp() {
       const matrix = await getDistanceMatrix(points, points);
       const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix).map(plan =>
         insertLunchBreak(plan, updatedSettings.lunchBreakMinutes || 0)
-      );
+      ).map(normalizeRoutePlan);
       setBaseline(computeInputOrderBaseline(updatedVisits, updatedSettings, matrix));
       setPlans(optimizedPlans);
       setActiveTab('result');
@@ -812,10 +851,12 @@ function MainApp() {
       const matrix = await getDistanceMatrix(points, points);
 
       // 3. Optimize + compute baseline (input order) for savings display
-      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix);
+      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix)
+        .map(plan => insertLunchBreak(plan, updatedSettings.lunchBreakMinutes || 0))
+        .map(normalizeRoutePlan);
       // Seed the manual ("カスタム") plan with the best automatic order so the
       // user has a sensible starting point to nudge from.
-      const customSeed = optimizedPlans[0].order.map(v => v.id);
+      const customSeed = optimizedPlans[0]?.order.map(v => v.id) || [];
       const customPlan = insertLunchBreak(
         calculatePlanForOrder(
           updatedVisits,
@@ -828,14 +869,14 @@ function MainApp() {
         ),
         updatedSettings.lunchBreakMinutes || 0
       );
-      optimizedPlans.push(customPlan);
+      optimizedPlans.push(normalizeRoutePlan(customPlan));
       // Persist context for later re-computation when the user reorders.
       optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
       setCustomOrder(customSeed);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
 
-      setPlans(optimizedPlans);
+      setPlans(optimizedPlans.map(normalizeRoutePlan));
       setCompletedVisitIds(new Set());
       setActiveTab('result');
       setActivePlanIdx(0);

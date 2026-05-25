@@ -53,7 +53,7 @@ function shortLabel(visit: Visit | undefined, tasks?: TaskType[]): string {
   return town;
 }
 
-function isRenderableLeg(leg: Leg | undefined): leg is Leg {
+function isRenderableLeg(leg: Leg | undefined | null): leg is Leg {
   return Boolean(
     leg &&
     typeof leg.arrivalTime === 'string' &&
@@ -70,12 +70,14 @@ function safeParseTime(value: string | undefined): number | null {
 
 function buildSegments(plan: RoutePlan, tasks?: TaskType[]): Segment[] {
   const segments: Segment[] = [];
-  const legs = plan.legs.filter(isRenderableLeg);
+  const legs = Array.isArray(plan.legs) ? plan.legs : [];
   for (let i = 0; i < legs.length; i++) {
     const leg = legs[i];
+    if (!isRenderableLeg(leg)) continue;
     const arrivalMin = safeParseTime(leg.arrivalTime);
     if (arrivalMin === null) continue;
-    const travelStart = arrivalMin - leg.durationMin;
+    const durationMin = Number.isFinite(Number(leg.durationMin)) ? Number(leg.durationMin) : 0;
+    const travelStart = arrivalMin - durationMin;
     segments.push({
       kind: 'travel',
       startMin: travelStart,
@@ -157,9 +159,15 @@ const HOUR_LABELS = Array.from({ length: 12 }, (_, i) => ({
 }));
 
 export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskType[] }) {
-  if (!plan || !plan.legs || plan.legs.length === 0) return null;
+  if (!plan || !Array.isArray(plan.legs) || plan.legs.length === 0) return null;
 
-  const segments = buildSegments(plan, tasks);
+  let segments: Segment[] = [];
+  try {
+    segments = buildSegments(plan, tasks);
+  } catch (error) {
+    console.error('ScheduleClock failed to render', error);
+    return null;
+  }
   if (segments.length === 0) return null;
 
   const totalTravel = segments
