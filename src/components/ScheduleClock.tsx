@@ -29,6 +29,9 @@ const COLORS: Record<SegmentKind, string> = {
 };
 
 const IDLE_TRACK_COLOR = '#475569'; // slate-600 — visible grey for empty time
+// Customer time windows use a dedicated amber so they never collide with the
+// semantic difficulty palette (green/yellow/red) used for work arcs.
+const WINDOW_COLOR = '#fbbf24'; // amber-400
 
 const STATUS_DOT: Record<SegmentStatus, string | null> = {
   ok: null,
@@ -158,6 +161,38 @@ const HOUR_LABELS = Array.from({ length: 12 }, (_, i) => ({
   angle: i * 30 - 90,
 }));
 
+// Outer label radii. tier 0 sits closer to the ring; tier 1 is pushed further
+// out so neighbouring labels that would otherwise overlap stay readable.
+const LABEL_R0 = RADIUS + STROKE / 2 + 18;
+const LABEL_R1 = RADIUS + STROKE / 2 + 34;
+const WINDOW_R = RADIUS + STROKE / 2 + 3;
+const WINDOW_LANE_STEP = 7; // radial offset per stacked (overlapping) window
+
+type PlacedLabel = { seg: Segment; angle: number; tier: 0 | 1 };
+
+// Assign each work label an angle and a tier. Sorting by angle and bumping a
+// label out one tier when it lands within ~16° of its predecessor keeps dense
+// clusters from stacking on top of each other.
+function placeLabels(segs: Segment[]): PlacedLabel[] {
+  const items = segs
+    .filter(s => s.label && s.visitIndex)
+    .map(s => {
+      const raw = minutesToAngle((s.startMin + s.endMin) / 2);
+      const angle = ((raw % 360) + 360) % 360;
+      return { seg: s, angle };
+    })
+    .sort((a, b) => a.angle - b.angle);
+  let lastAngle = -999;
+  let lastTier: 0 | 1 = 1;
+  return items.map(it => {
+    const tooClose = it.angle - lastAngle < 16;
+    const tier: 0 | 1 = tooClose && lastTier === 0 ? 1 : 0;
+    lastAngle = it.angle;
+    lastTier = tier;
+    return { ...it, tier };
+  });
+}
+
 export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskType[] }) {
   if (!plan || !Array.isArray(plan.legs) || plan.legs.length === 0) return null;
 
@@ -200,11 +235,57 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
     });
   });
 
+  const placedLabels = placeLabels(workSegments);
+
+  // Resolve each window into a drawable arc, then pack overlapping windows
+  // into outward "lanes" so they never sit on top of each other. Earlier
+  // visits get the inner lanes (sorted by start, tie-broken by visit order).
+  type PlacedWindow = {
+    visitIndex: number;
+    arcStart: number;
+    arcEnd: number;
+    isOpenStart: boolean;
+    isOpenEnd: boolean;
+    lane: number;
+  };
+  const WINDOW_PAD = 18; // minutes of angular gap required to share a lane
+  const laneEnds: number[] = []; // last occupied end (minutes) per lane
+  const placedWindows: PlacedWindow[] = windowMarkers
+    .map(m => {
+      let arcStart: number;
+      let arcEnd: number;
+      let isOpenStart = false;
+      let isOpenEnd = false;
+      if (m.startMin !== null && m.endMin !== null) {
+        arcStart = m.startMin;
+        arcEnd = m.endMin;
+      } else if (m.endMin !== null) {
+        arcEnd = m.endMin;
+        arcStart = m.endMin - 90;
+        isOpenStart = true;
+      } else if (m.startMin !== null) {
+        arcStart = m.startMin;
+        arcEnd = m.startMin + 90;
+        isOpenEnd = true;
+      } else {
+        return null;
+      }
+      return { visitIndex: m.visitIndex, arcStart, arcEnd, isOpenStart, isOpenEnd };
+    })
+    .filter((w): w is Omit<PlacedWindow, 'lane'> => w !== null)
+    .sort((a, b) => a.arcStart - b.arcStart || a.visitIndex - b.visitIndex)
+    .map(w => {
+      const lane = laneEnds.findIndex(end => w.arcStart >= end + WINDOW_PAD);
+      const assigned = lane === -1 ? laneEnds.length : lane;
+      laneEnds[assigned] = w.arcEnd;
+      return { ...w, lane: assigned };
+    });
+
   return (
     <div className="flex flex-col items-center gap-2 py-2">
       <svg
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        className="w-full max-w-[300px] h-auto"
+        className="w-full max-w-[300px] h-auto overflow-visible"
         role="img"
         aria-label="本日のスケジュール時計"
       >
@@ -218,10 +299,14 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           strokeWidth={STROKE}
           opacity={0.55}
         />
-        {/* Hour tick marks (every hour) */}
-        {Array.from({ length: 12 }, (_, i) => {
-          const a = (i / 12) * 360 - 90;
-          const inner = polar(a, RADIUS - STROKE / 2 - 4);
+        {/* Tick marks: 60 minute ticks, with the 5-minute marks longer and the
+            quarter marks (12/3/6/9) strongest — gives the dial an analog-clock
+            rhythm. */}
+        {Array.from({ length: 60 }, (_, i) => {
+          const major = i % 5 === 0;
+          const cardinal = i % 15 === 0;
+          const a = (i / 60) * 360 - 90;
+          const inner = polar(a, RADIUS - STROKE / 2 - (major ? 5 : 3));
           const outer = polar(a, RADIUS - STROKE / 2 - 1);
           return (
             <line
@@ -230,8 +315,9 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
               y1={inner.y}
               x2={outer.x}
               y2={outer.y}
-              stroke="#475569"
-              strokeWidth={1}
+              stroke={major ? '#94a3b8' : '#475569'}
+              strokeWidth={cardinal ? 1.5 : major ? 1 : 0.75}
+              opacity={major ? 0.9 : 0.5}
             />
           );
         })}
@@ -282,6 +368,7 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
         {/* Inner hour numbers 1..12 (12 at top, clockwise) */}
         {HOUR_LABELS.map(({ hour, angle }) => {
           const p = polar(angle, RADIUS - STROKE - 8);
+          const cardinal = hour % 3 === 0;
           return (
             <text
               key={`h-${hour}`}
@@ -289,42 +376,46 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
               y={p.y}
               textAnchor="middle"
               dominantBaseline="central"
-              fontSize={8.5}
+              fontSize={cardinal ? 10 : 8.5}
               fontWeight={700}
-              fill="#64748b"
+              fill={cardinal ? '#cbd5e1' : '#64748b'}
+              style={{ fontVariantNumeric: 'tabular-nums' }}
             >
               {hour}
             </text>
           );
         })}
-        {/* Outer visit identifier labels — tick uses the difficulty color so
-            the arc, the tick, the card, and the map marker all read as a set. */}
-        {workSegments.map((seg, idx) => {
-          if (!seg.label || !seg.visitIndex) return null;
-          const mid = (seg.startMin + seg.endMin) / 2;
-          const angle = minutesToAngle(mid);
-          const labelP = polar(angle, RADIUS + STROKE / 2 + 14);
-          const tickInner = polar(angle, RADIUS + STROKE / 2);
-          const tickOuter = polar(angle, RADIUS + STROKE / 2 + 5);
+        {/* Outer visit identifier labels. A leader line (tip → elbow → text)
+            runs from the arc to the label, and dense clusters are pushed out a
+            tier so they don't overlap. The tip dot keeps the difficulty color
+            so the arc, label, leg card, and map marker still read as a set. */}
+        {placedLabels.map(({ seg, angle, tier }, idx) => {
+          const baseR = tier === 0 ? LABEL_R0 : LABEL_R1;
+          const tip = polar(angle, RADIUS + STROKE / 2 + 1);
+          const elbow = polar(angle, baseR - 6);
+          const labelP = polar(angle, baseR);
+          const isRight = Math.cos((angle * Math.PI) / 180) >= 0;
+          const tx = labelP.x + (isRight ? 3 : -3);
           const color = difficultyColor(seg.difficulty).work;
           return (
             <g key={`lbl-${idx}`}>
-              <line
-                x1={tickInner.x}
-                y1={tickInner.y}
-                x2={tickOuter.x}
-                y2={tickOuter.y}
-                stroke={color}
-                strokeWidth={2}
+              <polyline
+                points={`${tip.x.toFixed(2)},${tip.y.toFixed(2)} ${elbow.x.toFixed(2)},${elbow.y.toFixed(2)} ${tx.toFixed(2)},${labelP.y.toFixed(2)}`}
+                fill="none"
+                stroke="#334155"
+                strokeWidth={1}
+                strokeLinecap="round"
               />
+              <circle cx={tip.x} cy={tip.y} r={2.5} fill={color} />
               <text
-                x={labelP.x}
+                x={tx}
                 y={labelP.y}
-                textAnchor="middle"
+                textAnchor={isRight ? 'start' : 'end'}
                 dominantBaseline="central"
                 fontSize={9}
                 fontWeight={700}
                 fill="#e2e8f0"
+                style={{ paintOrder: 'stroke', stroke: '#0b1220', strokeWidth: 3 }}
               >
                 {seg.visitIndex}.{seg.label}
               </text>
@@ -337,28 +428,17 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
                        far side) + boundary tick at X — reads as "must be by X".
             - 以降 X:   90-min arc forward from X + boundary tick at X — reads
                        as "must be from X onwards". */}
-        {windowMarkers.map((tw, i) => {
-          const color = difficultyColor(tw.difficulty).work;
-          const winRadius = RADIUS + STROKE / 2 + 22;
-          let arcStart: number;
-          let arcEnd: number;
-          if (tw.startMin !== null && tw.endMin !== null) {
-            arcStart = tw.startMin;
-            arcEnd = tw.endMin;
-          } else if (tw.endMin !== null) {
-            arcEnd = tw.endMin;
-            arcStart = tw.endMin - 90;
-          } else if (tw.startMin !== null) {
-            arcStart = tw.startMin;
-            arcEnd = tw.startMin + 90;
-          } else {
-            return null;
-          }
+        {placedWindows.map((w, i) => {
+          const color = WINDOW_COLOR;
+          const winRadius = WINDOW_R + w.lane * WINDOW_LANE_STEP;
+          const { arcStart, arcEnd, isOpenStart, isOpenEnd } = w;
           const d = arcPath(arcStart, arcEnd, winRadius);
+          // Boundary ticks bridge inward to the ring edge so the marker reads
+          // as an annotation on the time axis rather than a free-floating arc.
           const renderTick = (timeMin: number) => {
             const angle = minutesToAngle(timeMin);
-            const inner = polar(angle, winRadius - 5);
-            const outer = polar(angle, winRadius + 5);
+            const inner = polar(angle, winRadius - 4);
+            const outer = polar(angle, winRadius + 2);
             return (
               <line
                 x1={inner.x}
@@ -366,21 +446,19 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
                 x2={outer.x}
                 y2={outer.y}
                 stroke={color}
-                strokeWidth={2.5}
+                strokeWidth={1.25}
                 strokeLinecap="round"
               />
             );
           };
-          const isOpenStart = tw.startMin === null; // 以前: tail fades into earlier times
-          const isOpenEnd = tw.endMin === null;     // 以降: tail extends into later times
-          // Tangential arrowhead at the OPEN end of a one-sided window so
-          // the direction of the allowed region is explicit.
+          // Small tangential arrowhead at the OPEN end of a one-sided window so
+          // the direction of the allowed region stays legible while subtle.
           const renderArrow = (atTimeMin: number, direction: 'forward' | 'backward') => {
             const angle = minutesToAngle(atTimeMin);
             const sign = direction === 'forward' ? 1 : -1;
-            const tip = polar(angle + sign * 7, winRadius);
-            const baseInner = polar(angle + sign * 2, winRadius - 4);
-            const baseOuter = polar(angle + sign * 2, winRadius + 4);
+            const tip = polar(angle + sign * 5, winRadius);
+            const baseInner = polar(angle + sign * 1.5, winRadius - 2.5);
+            const baseOuter = polar(angle + sign * 1.5, winRadius + 2.5);
             return (
               <polygon
                 points={`${tip.x},${tip.y} ${baseInner.x},${baseInner.y} ${baseOuter.x},${baseOuter.y}`}
@@ -388,78 +466,125 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
               />
             );
           };
+          // Visit-number badge ties the marker to its case (matches the "n."
+          // in the outer label). Anchored at the closed boundary when there is
+          // one, otherwise the arc midpoint.
+          const anchorMin = !isOpenStart
+            ? arcStart
+            : !isOpenEnd
+              ? arcEnd
+              : (arcStart + arcEnd) / 2;
+          const badgeP = polar(minutesToAngle(anchorMin), winRadius + 7);
           return (
-            <g key={`tw-${i}`} opacity={0.85}>
-              <path
-                d={d}
-                stroke={color}
-                strokeWidth={3}
-                strokeLinecap={isOpenStart || isOpenEnd ? 'butt' : 'round'}
-                strokeDasharray={isOpenStart || isOpenEnd ? '4 3' : undefined}
-                fill="none"
-              />
-              {tw.startMin !== null && renderTick(tw.startMin)}
-              {tw.endMin !== null && renderTick(tw.endMin)}
-              {/* 以前: arrow at the open (earlier) end pointing further backward. */}
-              {isOpenStart && renderArrow(arcStart, 'backward')}
-              {/* 以降: arrow at the open (later) end pointing further forward. */}
-              {isOpenEnd && renderArrow(arcEnd, 'forward')}
+            <g key={`tw-${i}`}>
+              {/* The arc/ticks stay deliberately low-contrast (supporting
+                  context), while the number badge keeps enough contrast to be
+                  readable as the link to the case. */}
+              <g opacity={0.5}>
+                <path
+                  d={d}
+                  stroke={color}
+                  strokeWidth={1.5}
+                  strokeLinecap="butt"
+                  strokeDasharray={isOpenStart || isOpenEnd ? '2 3' : '3 2.5'}
+                  fill="none"
+                />
+                {!isOpenStart && renderTick(arcStart)}
+                {!isOpenEnd && renderTick(arcEnd)}
+                {isOpenStart && renderArrow(arcStart, 'backward')}
+                {isOpenEnd && renderArrow(arcEnd, 'forward')}
+              </g>
+              <text
+                x={badgeP.x}
+                y={badgeP.y}
+                textAnchor="middle"
+                dominantBaseline="central"
+                fontSize={7.5}
+                fontWeight={700}
+                fill={color}
+                style={{ paintOrder: 'stroke', stroke: '#0b1220', strokeWidth: 2.5 }}
+              >
+                {w.visitIndex}
+              </text>
             </g>
           );
         })}
-        {/* Center stack */}
-        <text x={CENTER} y={CENTER - 18} textAnchor="middle" fontSize={9} fontWeight={700} fill="#94a3b8">
+        {/* Center stack — the end time is the hero (the number that drives
+            field decisions), with 稼働 / 移動 as paired supporting metrics. */}
+        <text x={CENTER} y={CENTER - 26} textAnchor="middle" fontSize={9} fontWeight={600} fill="#94a3b8" letterSpacing={1}>
+          終了予定
+        </text>
+        <text
+          x={CENTER}
+          y={CENTER - 6}
+          textAnchor="middle"
+          fontSize={26}
+          fontWeight={800}
+          fill="#f8fafc"
+          style={{ fontVariantNumeric: 'tabular-nums' }}
+        >
+          {plan.endTime}
+        </text>
+        <line x1={CENTER - 40} x2={CENTER + 40} y1={CENTER + 8} y2={CENTER + 8} stroke="#1e293b" strokeWidth={1} />
+        <line x1={CENTER} x2={CENTER} y1={CENTER + 13} y2={CENTER + 32} stroke="#1e293b" strokeWidth={1} />
+        <text x={CENTER - 26} y={CENTER + 20} textAnchor="middle" fontSize={8.5} fontWeight={600} fill="#94a3b8">
           稼働
         </text>
-        <text x={CENTER} y={CENTER - 4} textAnchor="middle" fontSize={16} fontWeight={800} fill="#22c55e">
+        <text x={CENTER - 26} y={CENTER + 32} textAnchor="middle" fontSize={12} fontWeight={700} fill="#22c55e" style={{ fontVariantNumeric: 'tabular-nums' }}>
           {fmtDur(totalWork)}
         </text>
-        <text x={CENTER} y={CENTER + 12} textAnchor="middle" fontSize={10} fontWeight={600} fill="#60a5fa">
-          移動 {fmtDur(totalTravel)}
+        <text x={CENTER + 26} y={CENTER + 20} textAnchor="middle" fontSize={8.5} fontWeight={600} fill="#94a3b8">
+          移動
         </text>
-        <text x={CENTER} y={CENTER + 26} textAnchor="middle" fontSize={10} fontWeight={600} fill="#cbd5e1">
-          〜 {plan.endTime}
+        <text x={CENTER + 26} y={CENTER + 32} textAnchor="middle" fontSize={12} fontWeight={700} fill="#60a5fa" style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {fmtDur(totalTravel)}
         </text>
       </svg>
-      {/* Difficulty legend — only show levels actually present in the plan
-          so the key stays minimal. Pairs visually with the leg cards and
-          map markers, which share the same colors. */}
-      <div className="flex items-center justify-center gap-1.5 flex-wrap text-[10px] font-bold">
+      {/* Unified legend pill. Difficulty levels are grouped under a small
+          "作業" scale label and only the levels present in the plan are shown,
+          keeping the key minimal. The remaining categories and the customer
+          time-window marker follow, separated by thin dividers. */}
+      <div className="mt-1 inline-flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 rounded-full border border-slate-700/60 bg-slate-900/60 px-3 py-1.5 text-[10px] font-bold">
+        {workSegments.some(s => s.difficulty) && (
+          <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">作業</span>
+        )}
         {([1, 2, 3] as Difficulty[])
           .filter(d => workSegments.some(s => s.difficulty === d))
           .map(d => {
             const c = difficultyColor(d).work;
             return (
-              <span
-                key={`dk-${d}`}
-                className="flex items-center gap-1 px-2 py-0.5 rounded-full border"
-                style={{ background: `${c}26`, borderColor: `${c}66`, color: c }}
-              >
-                <span className="w-2 h-2 rounded-full" style={{ background: c }} />
+              <span key={`dk-${d}`} className="flex items-center gap-1 text-slate-300">
+                <span
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{ background: c, boxShadow: `0 0 0 1.5px ${c}33` }}
+                />
                 {DIFFICULTY_LABEL[d]}
               </span>
             );
           })}
-      </div>
-      {/* Category legend (the things that aren't difficulty-coloured) */}
-      <div className="flex items-center justify-center gap-1.5 flex-wrap text-[10px] font-bold opacity-80">
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/30">
-          <span className="w-2 h-2 rounded-full bg-blue-500" /> 移動
+        <span className="h-3 w-px bg-slate-700" />
+        <span className="flex items-center gap-1 text-slate-300">
+          <span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> 移動
         </span>
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/15 text-orange-300 border border-orange-500/30">
-          <span className="w-2 h-2 rounded-full bg-orange-500" /> 昼休憩
+        <span className="flex items-center gap-1 text-slate-300">
+          <span className="w-2.5 h-2.5 rounded-full bg-orange-500" /> 昼休憩
         </span>
-        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-500/15 text-slate-300 border border-slate-500/30">
-          <span className="w-2 h-2 rounded-full bg-slate-500" /> 空き
+        <span className="flex items-center gap-1 text-slate-300">
+          <span className="w-2.5 h-2.5 rounded-full bg-slate-500" /> 空き
         </span>
         {windowMarkers.length > 0 && (
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-700/40 text-slate-200 border border-slate-500/40" title="円の外側に表示される細い線は、お客様の指定時間です。範囲指定なら両端、以前/以降なら片端に短い目印が付きます。">
-            <svg width="14" height="6" viewBox="0 0 14 6">
-              <line x1="2" y1="3" x2="12" y2="3" stroke="currentColor" strokeWidth="2" strokeDasharray="3 2" />
-              <line x1="11" y1="0" x2="11" y2="6" stroke="currentColor" strokeWidth="2" />
-            </svg>
-            指定時間
-          </span>
+          <>
+            <span className="h-3 w-px bg-slate-700" />
+            <span
+              className="flex items-center gap-1 text-slate-300"
+              title="円の外側に表示される細い線は、お客様の指定時間です。範囲指定なら両端、以前/以降なら片端に短い目印が付きます。"
+            >
+              <svg width="14" height="10" viewBox="0 0 14 10" aria-hidden>
+                <path d="M2 2 V8 M2 5 H12 M12 2 V8" stroke={WINDOW_COLOR} strokeWidth="1.5" strokeLinecap="round" fill="none" />
+              </svg>
+              指定時間
+            </span>
+          </>
         )}
       </div>
     </div>
