@@ -4,6 +4,7 @@ import { difficultyColor, DIFFICULTY_LABEL } from '../lib/visitColors';
 
 type SegmentKind = 'travel' | 'work' | 'prep' | 'lunch';
 type SegmentStatus = 'ok' | 'warning' | 'violation';
+type ScheduleClockVariant = 'mobile' | 'desktop';
 
 type Segment = {
   kind: SegmentKind;
@@ -38,6 +39,19 @@ const STATUS_DOT: Record<SegmentStatus, string | null> = {
   warning: '#f59e0b',
   violation: '#ef4444',
 };
+
+function getHealthCopy(plan: RoutePlan): { label: string; detail: string; color: string } {
+  const legs = Array.isArray(plan.legs) ? plan.legs : [];
+  const warningCount = legs.filter(leg => leg.status === 'warning').length;
+  const violationCount = legs.filter(leg => leg.status === 'violation').length;
+  if (violationCount > 0) {
+    return { label: '要注意', detail: `超過 ${violationCount}件`, color: '#fb7185' };
+  }
+  if (warningCount > 0) {
+    return { label: '余裕少', detail: `警告 ${warningCount}件`, color: '#fbbf24' };
+  }
+  return { label: '順調', detail: 'リスクなし', color: '#34d399' };
+}
 
 // Build a privacy-safe label for a visit. Customer names are intentionally
 // NEVER used (they're considered personal info). Returns the town extracted
@@ -192,7 +206,15 @@ function placeLabels(segs: Segment[]): PlacedLabel[] {
   });
 }
 
-export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskType[] }) {
+export function ScheduleClock({
+  plan,
+  tasks,
+  variant = 'desktop',
+}: {
+  plan: RoutePlan;
+  tasks?: TaskType[];
+  variant?: ScheduleClockVariant;
+}) {
   if (!plan || !Array.isArray(plan.legs) || plan.legs.length === 0) return null;
 
   let segments: Segment[] = [];
@@ -235,12 +257,14 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
   });
 
   const placedLabels = placeLabels(workSegments);
+  const health = getHealthCopy(plan);
+  const compact = variant === 'mobile';
 
   return (
-    <div className="flex flex-col items-center gap-2 py-2">
+    <div className={compact ? "flex flex-col items-center gap-2 py-1" : "flex flex-col items-center gap-2 py-2"}>
       <svg
         viewBox={`0 0 ${SIZE} ${SIZE}`}
-        className="w-full max-w-[300px] h-auto overflow-visible"
+        className={compact ? "w-full max-w-[258px] h-auto overflow-visible" : "w-full max-w-[300px] h-auto overflow-visible"}
         role="img"
         aria-label="本日のスケジュール時計"
       >
@@ -352,6 +376,27 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           const isRight = Math.cos((angle * Math.PI) / 180) >= 0;
           const tx = labelP.x + (isRight ? 3 : -3);
           const color = difficultyColor(seg.difficulty).work;
+          if (compact) {
+            const badge = polar(angle, RADIUS + STROKE / 2 + 13);
+            return (
+              <g key={`lbl-${idx}`}>
+                <circle cx={tip.x} cy={tip.y} r={2.25} fill={color} />
+                <circle cx={badge.x} cy={badge.y} r={7.25} fill="#101827" stroke={color} strokeWidth={1.5} />
+                <text
+                  x={badge.x}
+                  y={badge.y + 0.5}
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                  fontSize={7.5}
+                  fontWeight={800}
+                  fill="#f8fafc"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                >
+                  {seg.visitIndex}
+                </text>
+              </g>
+            );
+          }
           return (
             <g key={`lbl-${idx}`}>
               <polyline
@@ -455,32 +500,38 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
         })}
         {/* Center stack — the end time is the hero (the number that drives
             field decisions), with 稼働 / 移動 as paired supporting metrics. */}
-        <text x={CENTER} y={CENTER - 26} textAnchor="middle" fontSize={9} fontWeight={600} fill="#94a3b8" letterSpacing={1}>
-          終了予定
+        <text x={CENTER} y={CENTER - 36} textAnchor="middle" fontSize={9} fontWeight={700} fill={health.color} letterSpacing={1}>
+          {health.label}
+        </text>
+        <text x={CENTER} y={CENTER - 24} textAnchor="middle" fontSize={7.5} fontWeight={600} fill="#94a3b8">
+          {health.detail}
         </text>
         <text
           x={CENTER}
-          y={CENTER - 6}
+          y={CENTER - 3}
           textAnchor="middle"
-          fontSize={26}
+          fontSize={compact ? 24 : 26}
           fontWeight={800}
           fill="#f8fafc"
           style={{ fontVariantNumeric: 'tabular-nums' }}
         >
           {plan.endTime}
         </text>
-        <line x1={CENTER - 40} x2={CENTER + 40} y1={CENTER + 8} y2={CENTER + 8} stroke="#1e293b" strokeWidth={1} />
-        <line x1={CENTER} x2={CENTER} y1={CENTER + 13} y2={CENTER + 32} stroke="#1e293b" strokeWidth={1} />
-        <text x={CENTER - 26} y={CENTER + 20} textAnchor="middle" fontSize={8.5} fontWeight={600} fill="#94a3b8">
+        <text x={CENTER} y={CENTER + 12} textAnchor="middle" fontSize={7.5} fontWeight={600} fill="#94a3b8" letterSpacing={1}>
+          終了予定
+        </text>
+        <line x1={CENTER - 40} x2={CENTER + 40} y1={CENTER + 22} y2={CENTER + 22} stroke="#1e293b" strokeWidth={1} />
+        <line x1={CENTER} x2={CENTER} y1={CENTER + 27} y2={CENTER + 46} stroke="#1e293b" strokeWidth={1} />
+        <text x={CENTER - 26} y={CENTER + 34} textAnchor="middle" fontSize={8.5} fontWeight={600} fill="#94a3b8">
           稼働
         </text>
-        <text x={CENTER - 26} y={CENTER + 32} textAnchor="middle" fontSize={12} fontWeight={700} fill="#22c55e" style={{ fontVariantNumeric: 'tabular-nums' }}>
+        <text x={CENTER - 26} y={CENTER + 46} textAnchor="middle" fontSize={12} fontWeight={700} fill="#22c55e" style={{ fontVariantNumeric: 'tabular-nums' }}>
           {fmtDur(totalWork)}
         </text>
-        <text x={CENTER + 26} y={CENTER + 20} textAnchor="middle" fontSize={8.5} fontWeight={600} fill="#94a3b8">
+        <text x={CENTER + 26} y={CENTER + 34} textAnchor="middle" fontSize={8.5} fontWeight={600} fill="#94a3b8">
           移動
         </text>
-        <text x={CENTER + 26} y={CENTER + 32} textAnchor="middle" fontSize={12} fontWeight={700} fill="#60a5fa" style={{ fontVariantNumeric: 'tabular-nums' }}>
+        <text x={CENTER + 26} y={CENTER + 46} textAnchor="middle" fontSize={12} fontWeight={700} fill="#60a5fa" style={{ fontVariantNumeric: 'tabular-nums' }}>
           {fmtDur(totalTravel)}
         </text>
       </svg>
@@ -488,7 +539,7 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
           "作業" scale label and only the levels present in the plan are shown,
           keeping the key minimal. The remaining categories and the customer
           time-window marker follow, separated by thin dividers. */}
-      <div className="mt-1 inline-flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 rounded-full border border-slate-700/60 bg-slate-900/60 px-3 py-1.5 text-[10px] font-bold">
+      <div className={cnLegend(compact)}>
         {workSegments.some(s => s.difficulty) && (
           <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold">作業</span>
         )}
@@ -533,4 +584,10 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
       </div>
     </div>
   );
+}
+
+function cnLegend(compact: boolean): string {
+  return compact
+    ? "mt-0 grid grid-cols-3 gap-x-2 gap-y-1 rounded-xl border border-slate-700/60 bg-slate-900/60 px-2.5 py-2 text-[10px] font-bold"
+    : "mt-1 inline-flex flex-wrap items-center justify-center gap-x-2.5 gap-y-1.5 rounded-full border border-slate-700/60 bg-slate-900/60 px-3 py-1.5 text-[10px] font-bold";
 }

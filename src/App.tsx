@@ -94,6 +94,14 @@ type PlanScore = {
   riskPenalty: number;
 };
 
+type RouteHealth = {
+  label: '順調' | '余裕少' | '要注意';
+  detail: string;
+  tone: 'good' | 'watch' | 'danger';
+  warningCount: number;
+  violationCount: number;
+};
+
 function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
@@ -184,6 +192,80 @@ function computePlanScores(plans: RoutePlan[]): PlanScore[] {
   });
 }
 
+function getRouteHealth(plan: RoutePlan): RouteHealth {
+  const legs = plan.legs.filter(isCompleteLeg);
+  const warningCount = legs.filter(leg => leg.status === 'warning').length;
+  const violationCount = legs.filter(leg => leg.status === 'violation').length;
+  if (violationCount > 0) {
+    return {
+      label: '要注意',
+      detail: `指定時間超過 ${violationCount}件`,
+      tone: 'danger',
+      warningCount,
+      violationCount,
+    };
+  }
+  if (warningCount > 0) {
+    return {
+      label: '余裕少',
+      detail: `余裕少 ${warningCount}件`,
+      tone: 'watch',
+      warningCount,
+      violationCount,
+    };
+  }
+  return {
+    label: '順調',
+    detail: '指定時間リスクなし',
+    tone: 'good',
+    warningCount,
+    violationCount,
+  };
+}
+
+function formatDurationJp(minutes: number): string {
+  const safe = Math.max(0, Math.round(Number(minutes) || 0));
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+  if (h === 0) return `${m}分`;
+  if (m === 0) return `${h}時間`;
+  return `${h}時間${m}分`;
+}
+
+function formatTimeWindowLabel(visit: Visit | null | undefined): string {
+  const tw = visit?.timeWindow;
+  if (!tw) return '指定なし';
+  if (tw.start && tw.end) return `${tw.start}-${tw.end}`;
+  if (tw.start) return `${tw.start} 以降`;
+  if (tw.end) return `${tw.end} 以前`;
+  return '指定なし';
+}
+
+function taskNameForVisit(settings: Settings, visit: Visit | null | undefined): string {
+  if (!visit) return '訪問先';
+  return settings.tasks.find(t => t.id === visit.taskId)?.name || '訪問先';
+}
+
+function getLegVisit(plan: RoutePlan, leg: Leg): { visit: Visit | null; visitOrderIndex: number } {
+  const visit = leg.visitId ? plan.order.find(v => v.id === leg.visitId) || null : null;
+  return {
+    visit,
+    visitOrderIndex: visit ? plan.order.findIndex(v => v.id === visit.id) + 1 : 0,
+  };
+}
+
+function getNextVisit(plan: RoutePlan, completedVisitIds: Set<string>): { visit: Visit; leg: Leg; visitOrderIndex: number } | null {
+  const nextVisit = plan.order.find(v => !completedVisitIds.has(v.id));
+  if (!nextVisit) return null;
+  const leg = plan.legs.find(item => item.visitId === nextVisit.id && isCompleteLeg(item));
+  if (!leg) return null;
+  return {
+    visit: nextVisit,
+    leg,
+    visitOrderIndex: plan.order.findIndex(v => v.id === nextVisit.id) + 1,
+  };
+}
+
 function shiftTime(value: string | undefined, minutes: number): string | undefined {
   if (!value) return value;
   const [h, m] = value.split(':').map(Number);
@@ -271,10 +353,10 @@ function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates
   return (
     <div className="flex flex-col gap-2 w-full">
       <div className="flex border border-ui rounded-lg overflow-hidden w-full h-7">
-        <button onClick={() => setMode('none')} className={cn("flex-1 text-[10px] font-bold border-r border-ui transition-colors", mode === 'none' ? "bg-blue-600 text-white" : "bg-slate-800 text-secondary hover:bg-slate-700")}>なし</button>
-        <button onClick={() => setMode('before')} className={cn("flex-1 text-[10px] font-bold border-r border-ui transition-colors", mode === 'before' ? "bg-blue-600 text-white" : "bg-slate-800 text-secondary hover:bg-slate-700")}>以前</button>
-        <button onClick={() => setMode('after')} className={cn("flex-1 text-[10px] font-bold border-r border-ui transition-colors", mode === 'after' ? "bg-blue-600 text-white" : "bg-slate-800 text-secondary hover:bg-slate-700")}>以降</button>
-        <button onClick={() => setMode('range')} className={cn("flex-1 text-[10px] font-bold transition-colors", mode === 'range' ? "bg-blue-600 text-white" : "bg-slate-800 text-secondary hover:bg-slate-700")}>範囲(〜)</button>
+        <button onClick={() => setMode('none')} className={cn("flex-1 text-[10px] font-bold border-r border-ui transition-colors", mode === 'none' ? "bg-amber-500/20 text-amber-100 ring-1 ring-amber-400/45" : "bg-slate-800 text-secondary hover:bg-slate-700")}>なし</button>
+        <button onClick={() => setMode('before')} className={cn("flex-1 text-[10px] font-bold border-r border-ui transition-colors", mode === 'before' ? "bg-amber-500/20 text-amber-100 ring-1 ring-amber-400/45" : "bg-slate-800 text-secondary hover:bg-slate-700")}>以前</button>
+        <button onClick={() => setMode('after')} className={cn("flex-1 text-[10px] font-bold border-r border-ui transition-colors", mode === 'after' ? "bg-amber-500/20 text-amber-100 ring-1 ring-amber-400/45" : "bg-slate-800 text-secondary hover:bg-slate-700")}>以降</button>
+        <button onClick={() => setMode('range')} className={cn("flex-1 text-[10px] font-bold transition-colors", mode === 'range' ? "bg-amber-500/20 text-amber-100 ring-1 ring-amber-400/45" : "bg-slate-800 text-secondary hover:bg-slate-700")}>範囲(〜)</button>
       </div>
       
       {mode !== 'none' && (
@@ -308,6 +390,440 @@ function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function healthToneClasses(tone: RouteHealth['tone']): {
+  panel: string;
+  text: string;
+  chip: string;
+  dot: string;
+} {
+  if (tone === 'danger') {
+    return {
+      panel: 'border-red-500/35 bg-red-500/10',
+      text: 'text-red-200',
+      chip: 'bg-red-500/15 text-red-200 border-red-500/35',
+      dot: 'bg-red-400 shadow-[0_0_10px_#f87171]',
+    };
+  }
+  if (tone === 'watch') {
+    return {
+      panel: 'border-amber-500/35 bg-amber-500/10',
+      text: 'text-amber-200',
+      chip: 'bg-amber-500/15 text-amber-200 border-amber-500/35',
+      dot: 'bg-amber-400 shadow-[0_0_10px_#fbbf24]',
+    };
+  }
+  return {
+    panel: 'border-emerald-500/30 bg-emerald-500/10',
+    text: 'text-emerald-200',
+    chip: 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30',
+    dot: 'bg-emerald-400 shadow-[0_0_10px_#34d399]',
+  };
+}
+
+function RouteSummaryPanel({
+  activePlan,
+  scores,
+  activePlanIdx,
+  baseline,
+  onSelectPlan,
+}: {
+  activePlan: RoutePlan;
+  scores: PlanScore[];
+  activePlanIdx: number;
+  baseline: Baseline | null;
+  onSelectPlan: (idx: number) => void;
+}) {
+  const recommended = scores[0];
+  const currentScore = scores.find(score => score.idx === activePlanIdx);
+  const health = getRouteHealth(activePlan);
+  const tone = healthToneClasses(health.tone);
+  const savedKm = baseline ? Math.max(0, baseline.totalDistanceKm - activePlan.totalDistanceKm) : 0;
+  const savedMin = baseline ? Math.max(0, baseline.totalDurationMin - activePlan.totalDurationMin) : 0;
+
+  return (
+    <section className={cn("m-3 rounded-xl border p-4 shadow-xl shadow-black/10", tone.panel)}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <span className={cn("h-2.5 w-2.5 rounded-full", tone.dot)} />
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">今日の作戦</span>
+            <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-bold", tone.chip)}>
+              {health.label}
+            </span>
+          </div>
+          <div className="flex items-end gap-2">
+            <span className="text-3xl font-extrabold num-font text-white">{activePlan.endTime}</span>
+            <span className="pb-1 text-[11px] font-bold text-slate-400">終了予定</span>
+          </div>
+          <p className={cn("mt-1 text-xs font-bold", tone.text)}>
+            {health.detail} ・ 移動 {formatDurationJp(activePlan.totalDurationMin)}
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Score</p>
+          <p className="text-2xl font-extrabold num-font text-white">
+            {currentScore?.score ?? '--'}<span className="text-xs text-slate-400">点</span>
+          </p>
+          {recommended && recommended.idx !== activePlanIdx && (
+            <button
+              onClick={() => onSelectPlan(recommended.idx)}
+              className="mt-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-200 hover:bg-amber-500/20"
+            >
+              推奨案へ
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+          <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">距離</span>
+          <span className="text-sm font-bold num-font text-white">{activePlan.totalDistanceKm.toFixed(1)}km</span>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+          <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">警告</span>
+          <span className="text-sm font-bold num-font text-white">{health.warningCount}件</span>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+          <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">超過</span>
+          <span className="text-sm font-bold num-font text-white">{health.violationCount}件</span>
+        </div>
+      </div>
+      {baseline && (savedKm >= 0.1 || savedMin >= 1) && (
+        <p className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-[11px] font-bold text-emerald-200">
+          入力順より {savedKm.toFixed(1)}km / {savedMin}分 短縮
+        </p>
+      )}
+    </section>
+  );
+}
+
+function PlanTabs({
+  plans,
+  scores,
+  activePlanIdx,
+  onSelectPlan,
+}: {
+  plans: RoutePlan[];
+  scores: PlanScore[];
+  activePlanIdx: number;
+  onSelectPlan: (idx: number) => void;
+}) {
+  const scoreByIdx = new globalThis.Map(scores.map(score => [score.idx, score]));
+  const recommendedIdx = scores[0]?.idx;
+  return (
+    <div className="border-y border-ui bg-slate-950/25 px-3 py-3">
+      <div className="flex gap-2 overflow-x-auto pb-1 custom-scrollbar">
+        {plans.map((plan, idx) => {
+          const score = scoreByIdx.get(idx);
+          const selected = activePlanIdx === idx;
+          const recommended = idx === recommendedIdx;
+          return (
+            <button
+              key={plan.id}
+              onClick={() => onSelectPlan(idx)}
+              className={cn(
+                "min-w-[118px] rounded-xl border p-3 text-left transition-all",
+                selected
+                  ? "border-amber-400/60 bg-amber-500/15 shadow-lg shadow-amber-950/30"
+                  : "border-ui bg-slate-900/70 hover:bg-slate-800/80",
+                recommended && !selected && "border-emerald-500/40"
+              )}
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className="text-sm font-extrabold text-white">{plan.label}</span>
+                {recommended && (
+                  <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-bold text-emerald-200">推奨</span>
+                )}
+              </span>
+              <span className="mt-1 block text-[11px] font-bold text-slate-400">
+                {score ? `${score.score}点` : '手動'} ・ {formatDurationJp(plan.totalDurationMin)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NextVisitCard({
+  plan,
+  settings,
+  completedVisitIds,
+  onComplete,
+  onNavigateVisit,
+  onNavigatePlan,
+}: {
+  plan: RoutePlan;
+  settings: Settings;
+  completedVisitIds: Set<string>;
+  onComplete: (id: string) => void;
+  onNavigateVisit: (visit: Visit) => void;
+  onNavigatePlan: () => void;
+}) {
+  const next = getNextVisit(plan, completedVisitIds);
+  if (!next) {
+    return (
+      <section className="mx-3 mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-300" />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-extrabold text-emerald-100">本日の訪問はすべて完了</h2>
+            <p className="mt-1 text-xs text-emerald-100/70">必要なら帰着ルートをGoogle Mapsで確認できます。</p>
+          </div>
+          <button
+            onClick={onNavigatePlan}
+            className="rounded-lg bg-emerald-500/20 px-3 py-2 text-[11px] font-bold text-emerald-100 hover:bg-emerald-500/30"
+          >
+            ナビ
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  const { visit, leg, visitOrderIndex } = next;
+  const statusTone = healthToneClasses(leg.status === 'violation' ? 'danger' : leg.status === 'warning' ? 'watch' : 'good');
+  return (
+    <section className={cn("mx-3 mb-3 rounded-xl border p-4", statusTone.panel)}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">次の訪問</p>
+          <h2 className="mt-0.5 text-lg font-extrabold text-white">{visitOrderIndex}. {taskNameForVisit(settings, visit)}</h2>
+        </div>
+        <div
+          className="rounded-lg px-2.5 py-1.5 text-center text-white shadow-lg"
+          style={{ background: difficultyColor(visit.difficulty).work }}
+        >
+          <span className="block text-[9px] font-bold">到着</span>
+          <span className="block text-sm font-extrabold num-font">{leg.arrivalTime}</span>
+        </div>
+      </div>
+      <p className="text-xs leading-relaxed text-slate-300">{visit.address}</p>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+        <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+          <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">指定時間</span>
+          <span className={cn("font-bold", statusTone.text)}>{formatTimeWindowLabel(visit)}</span>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+          <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-500">完了予定</span>
+          <span className="font-bold num-font text-white">{leg.endTime}</span>
+        </div>
+      </div>
+      <div className="mt-3 grid grid-cols-[1.4fr_1fr] gap-2">
+        <button
+          onClick={() => onNavigateVisit(visit)}
+          className="flex items-center justify-center gap-2 rounded-xl bg-amber-500 px-3 py-3 text-sm font-extrabold text-slate-950 shadow-lg shadow-amber-950/20 active:scale-[0.98]"
+        >
+          <Navigation className="h-4 w-4" /> ナビ開始
+        </button>
+        <button
+          onClick={() => onComplete(visit.id)}
+          className="flex items-center justify-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-3 py-3 text-sm font-bold text-emerald-100 hover:bg-emerald-500/25"
+        >
+          <CheckCircle2 className="h-4 w-4" /> 完了
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function RouteTimeline({
+  plan,
+  settings,
+  completedVisitIds,
+  activePlanId,
+  customOrder,
+  onMoveCustomVisit,
+  onToggleCompleted,
+  onNavigateVisit,
+}: {
+  plan: RoutePlan;
+  settings: Settings;
+  completedVisitIds: Set<string>;
+  activePlanId: RoutePlan['id'];
+  customOrder: string[];
+  onMoveCustomVisit: (id: string, direction: number) => void;
+  onToggleCompleted: (id: string) => void;
+  onNavigateVisit: (visit: Visit) => void;
+}) {
+  return (
+    <div className="space-y-3 px-3 pb-3">
+      <div className="flex items-center justify-between px-1">
+        <h2 className="text-xs font-bold uppercase tracking-widest text-slate-500">本日のタイムライン</h2>
+        <span className="text-[11px] font-bold text-slate-400">{plan.order.length}件</span>
+      </div>
+      {plan.legs.filter(isCompleteLeg).map((leg, idx) => {
+        const lunchBreak = plan.lunchBreak;
+        const { visit, visitOrderIndex } = getLegVisit(plan, leg);
+        const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
+        const statusTone = healthToneClasses(leg.status === 'violation' ? 'danger' : leg.status === 'warning' ? 'watch' : 'good');
+        const visitColor = visit ? difficultyColor(visit.difficulty).work : '#64748b';
+        return (
+          <div key={`${leg.visitId || 'end'}-${idx}`} className="relative">
+            <div className="absolute bottom-0 left-[17px] top-9 w-px bg-slate-800" />
+            <div className="flex gap-3">
+              <div
+                className="z-10 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border-2 border-slate-950 text-xs font-extrabold text-white shadow-lg"
+                style={{ background: visitColor }}
+              >
+                {visit ? visitOrderIndex : <CheckCircle2 className="h-4 w-4" />}
+              </div>
+              <div className={cn(
+                "min-w-0 flex-1 rounded-xl border bg-slate-900/70 p-3 transition-all",
+                visit ? statusTone.panel : "border-ui"
+              )}>
+                {visit ? (
+                  <>
+                    <div className="mb-2 flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="rounded-md bg-slate-950/40 px-2 py-1 text-[11px] font-extrabold num-font text-white">
+                            {leg.arrivalTime}着
+                          </span>
+                          <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-bold", statusTone.chip)}>
+                            {leg.status === 'ok' ? '正常' : leg.status === 'warning' ? '余裕少' : '遅延懸念'}
+                          </span>
+                        </div>
+                        <h3 className={cn("mt-2 truncate text-sm font-extrabold text-white", isCompleted && "line-through text-slate-500")}>
+                          {taskNameForVisit(settings, visit)}
+                        </h3>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        {activePlanId === 'X' && (
+                          <>
+                            <button
+                              onClick={() => onMoveCustomVisit(visit.id, -1)}
+                              disabled={customOrder.indexOf(visit.id) <= 0}
+                              title="上に移動"
+                              className="rounded-lg p-1.5 text-blue-300 hover:bg-blue-500/10 disabled:opacity-30"
+                            >
+                              <ArrowUp className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => onMoveCustomVisit(visit.id, 1)}
+                              disabled={customOrder.indexOf(visit.id) >= customOrder.length - 1}
+                              title="下に移動"
+                              className="rounded-lg p-1.5 text-blue-300 hover:bg-blue-500/10 disabled:opacity-30"
+                            >
+                              <ArrowDown className="h-4 w-4" />
+                            </button>
+                          </>
+                        )}
+                        <button
+                          onClick={() => onToggleCompleted(visit.id)}
+                          title={isCompleted ? '完了を取り消す' : '完了にする'}
+                          className={cn(
+                            "rounded-lg p-1.5 transition-colors",
+                            isCompleted ? "bg-emerald-500/25 text-emerald-100" : "text-emerald-300 hover:bg-emerald-500/10"
+                          )}
+                        >
+                          <CheckCircle2 className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => onNavigateVisit(visit)}
+                          title="この訪問先にナビ"
+                          className="rounded-lg p-1.5 text-amber-300 hover:bg-amber-500/10"
+                        >
+                          <Navigation className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                    <p className={cn("truncate text-[11px]", isCompleted ? "text-slate-600 line-through" : "text-slate-400")}>
+                      {visit.address}
+                    </p>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-[10px]">
+                      <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+                        <span className="block font-bold uppercase tracking-wider text-slate-500">指定</span>
+                        <span className={cn("font-bold", statusTone.text)}>{formatTimeWindowLabel(visit)}</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+                        <span className="block font-bold uppercase tracking-wider text-slate-500">作業</span>
+                        <span className="font-bold text-white">{visit.workMinutes + 30}分</span>
+                      </div>
+                      <div className="rounded-lg border border-white/10 bg-slate-950/25 p-2">
+                        <span className="block font-bold uppercase tracking-wider text-slate-500">移動</span>
+                        <span className="font-bold text-white">{leg.durationMin}分</span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">終点到着</p>
+                      <h3 className="mt-1 truncate text-sm font-bold text-white">
+                        {settings.endLocation === 'home' ? settings.homeAddress : settings.customEndAddress}
+                      </h3>
+                    </div>
+                    <span className="shrink-0 rounded-md bg-slate-950/40 px-2 py-1 text-[11px] font-extrabold num-font text-white">
+                      {leg.arrivalTime}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+            {lunchBreak && lunchBreak.afterVisitId === leg.visitId && (
+              <div className="ml-12 mt-3 rounded-xl border border-orange-500/30 bg-orange-500/10 p-3">
+                <div className="flex items-center gap-2 text-orange-300">
+                  <Utensils className="h-4 w-4" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest">昼食・休憩</span>
+                </div>
+                <p className="mt-1 text-xs font-extrabold num-font text-orange-100">
+                  {lunchBreak.startTime} - {lunchBreak.endTime} / {lunchBreak.durationMin}分
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function OperationFooter({
+  plan,
+  completedVisitIds,
+  onNavigatePlan,
+  onEditConditions,
+}: {
+  plan: RoutePlan;
+  completedVisitIds: Set<string>;
+  onNavigatePlan: () => void;
+  onEditConditions: () => void;
+}) {
+  const total = plan.order.length;
+  const done = plan.order.filter(v => completedVisitIds.has(v.id)).length;
+  const pct = total > 0 ? (done / total) * 100 : 0;
+  return (
+    <div className="sticky bottom-0 z-20 space-y-3 border-t border-ui bg-slate-950/90 p-3 backdrop-blur-md lg:static lg:bg-slate-950/70">
+      <div>
+        <div className="mb-1 flex items-baseline justify-between">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">本日の進捗</span>
+          <span className="text-xs font-bold num-font text-white">{done} / {total} 件完了</span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+          <div
+            className="h-full bg-emerald-400 transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+      <button
+        onClick={onNavigatePlan}
+        className="flex w-full items-center justify-center gap-3 rounded-xl bg-amber-500 py-3.5 text-sm font-extrabold text-slate-950 shadow-xl shadow-amber-950/25 active:scale-[0.98]"
+      >
+        <Navigation className="h-5 w-5" /> Google Maps でナビ開始
+      </button>
+      <button
+        onClick={onEditConditions}
+        className="flex w-full items-center justify-center gap-2 rounded-lg py-2 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white"
+      >
+        条件編集に戻る <ChevronRight className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
@@ -891,6 +1407,26 @@ function MainApp() {
 
   const displayPlans = plans.map(normalizeRoutePlan);
   const activePlan = displayPlans[activePlanIdx];
+  const planScores = computePlanScores(displayPlans);
+  const [showMobileMap, setShowMobileMap] = useState(false);
+
+  const openVisitNavigation = (visit: Visit) => {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(visit.address)}`, '_blank');
+  };
+
+  const openPlanNavigation = () => {
+    const plan = activePlan;
+    const remaining = plan.order.filter(v => !completedVisitIds.has(v.id));
+    if (remaining.length === 0) {
+      showNotice({ kind: 'success', title: '本日の訪問はすべて完了しました', detail: 'お疲れさまでした！' });
+      return;
+    }
+    const waypoints = remaining.map(v => encodeURIComponent(v.address)).join('/');
+    const dest = settings.endLocation === 'home'
+      ? settings.homeAddress
+      : (settings.endLocation === 'custom' ? settings.customEndAddress : remaining[remaining.length - 1].address);
+    window.open(`https://www.google.com/maps/dir/${encodeURIComponent(settings.homeAddress)}/${waypoints}/${encodeURIComponent(dest || '')}`, '_blank');
+  };
 
   return (
     <div className="bg-bg text-gray-200 min-h-screen font-sans border-ui overflow-x-hidden pb-20">
@@ -965,286 +1501,353 @@ function MainApp() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="p-4 space-y-4 max-w-2xl mx-auto"
+            className="mx-auto w-full max-w-[1320px] px-3 pb-28 pt-4 sm:px-5 lg:pb-6"
           >
-            {/* Start Point */}
-            <div className="bg-card p-4 rounded-xl border border-ui">
-              <div className="flex justify-between items-center mb-3">
-                <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider">
-                  <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・出発時刻
-                </div>
-                <button
-                  onClick={() => setShowStartEndSettings(true)}
-                  className="text-[10px] bg-slate-800 text-blue-400 hover:text-blue-300 font-bold px-2 py-1 rounded border border-ui"
-                >
-                  編集
-                </button>
-              </div>
-              <div className="space-y-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">起点</span>
-                  <p className="text-sm font-medium truncate">{settings.homeAddress}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">出発</span>
-                  <p className="text-sm font-medium num-font">{settings.startTime || '09:00'}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">終点</span>
-                  <p className="text-sm font-medium truncate">
-                    {settings.endLocation === 'home' && '起点と同じ'}
-                    {settings.endLocation === 'none' && '終点なし（最終訪問先で解散）'}
-                    {settings.endLocation === 'custom' && (settings.customEndAddress || '未設定')}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-between items-end mt-4 mb-1">
-               <div className="flex items-center gap-3">
-                 <h2 className="text-sm font-bold text-gray-200">訪問先リスト</h2>
-                 <button 
-                   onClick={() => setShowTasksSettings(true)}
-                   className="text-[10px] bg-slate-800 text-blue-400 hover:text-blue-300 font-bold px-2 py-1 rounded border border-ui"
-                 >
-                   作業設定
-                 </button>
-               </div>
-               {visits.length > 0 && (
-                 <button 
-                   onClick={() => setVisits([])}
-                   className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 uppercase font-bold tracking-wider"
-                 >
-                   <Trash2 className="w-3 h-3" /> リセット
-                 </button>
-               )}
-            </div>
-
-            {/* Visit List */}
-            <div className="space-y-3">
-              {visits.map((visit, idx) => {
-                const validation = getVisitValidation(visit);
-                const hasErrors = validation.errors.length > 0;
-                const hasWarnings = !hasErrors && validation.warnings.length > 0;
-                return (
-                <div
-                  key={visit.id}
-                  className={cn(
-                    "bg-card p-4 rounded-xl border relative group transition-all hover:border-blue-500/30",
-                    hasErrors ? "border-red-500/50" : hasWarnings ? "border-yellow-500/30" : "border-ui"
-                  )}
-                >
-                  <div className="flex justify-between items-start mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-6 h-6 rounded-md bg-slate-800 border border-ui flex items-center justify-center text-[10px] font-bold text-blue-400">
-                        {idx + 1}
-                      </span>
-                      <select 
-                        className="bg-transparent border-none text-sm font-bold focus:ring-0 w-full appearance-none cursor-pointer"
-                        value={visit.taskId || ''}
-                        onChange={(e) => {
-                          const tId = e.target.value;
-                          const task = settings.tasks.find(t => t.id === tId);
-                          handleUpdateVisit(visit.id, {
-                            taskId: tId,
-                            workMinutes: task ? task.defaultMinutes : visit.workMinutes
-                          });
-                        }}
-                      >
-                        <option value="" disabled className="text-gray-500">作業を選択...</option>
-                        {settings.tasks.map(t => (
-                          <option key={t.id} value={t.id} className="bg-[#1A1D23]">{t.name}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <DifficultySelector 
-                        value={visit.difficulty} 
-                        onChange={(d) => handleUpdateVisit(visit.id, { difficulty: d })} 
-                      />
-                      <button onClick={() => handleDeleteVisit(visit.id)} className="p-1 hover:bg-red-500/10 rounded">
-                        <Trash2 className="w-4 h-4 text-secondary hover:text-red-400" />
-                      </button>
+            <div className="overflow-hidden rounded-[22px] border border-slate-700/70 bg-slate-950/45 shadow-2xl shadow-black/30">
+              <div className="border-b border-ui bg-slate-950/55 px-4 py-4 backdrop-blur-md sm:px-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500 text-sm font-extrabold text-white shadow-lg shadow-blue-950/40">
+                      R
+                    </span>
+                    <div>
+                      <h2 className="text-base font-extrabold tracking-tight text-white">ルート最適化 <span className="text-[11px] font-medium text-slate-400">v1.2</span></h2>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Field operations setup</p>
                     </div>
                   </div>
-                  
-                  <textarea 
-                    className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-xs mb-3 resize-none focus:border-blue-500/50 transition-colors"
-                    placeholder="住所を入力..."
-                    rows={2}
-                    value={visit.address}
-                    onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
-                  />
-                  {(validation.errors.length > 0 || validation.warnings.length > 0) && (
-                    <div className="mb-3 space-y-1">
-                      {validation.errors.map(message => (
-                        <p key={message} className="flex items-center gap-1.5 text-[10px] font-bold text-red-300">
-                          <AlertTriangle className="w-3 h-3 shrink-0" />
-                          {message}
-                        </p>
-                      ))}
-                      {validation.warnings.map(message => (
-                        <p key={message} className="flex items-center gap-1.5 text-[10px] font-bold text-yellow-300">
-                          <AlertTriangle className="w-3 h-3 shrink-0" />
-                          {message}
-                        </p>
-                      ))}
-                    </div>
-                  )}
+                  <button
+                    onClick={() => (userPlan === 'pro' ? downgradeToFree() : upgradeToPro())}
+                    className="rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-[11px] font-bold text-slate-200 hover:bg-slate-800"
+                  >
+                    プラン{userPlan === 'pro' ? 'A' : 'Free'}
+                  </button>
+                </div>
+              </div>
 
-                  <div className="flex flex-col gap-3 mt-3">
-                     <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
-                        <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5" /> 訪問時間
-                        </span>
-                        <TimeWindowInput visit={visit} onChange={(u) => handleUpdateVisit(visit.id, u)} />
-                     </div>
-
-                     <div className="flex items-center gap-3 bg-slate-800/50 p-2.5 rounded border border-ui">
-                        <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">
-                          滞在予定（作業時間）
-                        </span>
-                        <select 
-                          className="bg-slate-900 border border-ui text-white rounded-md p-1.5 text-xs font-bold flex-1"
-                          value={visit.workMinutes}
-                          onChange={(e) => handleUpdateVisit(visit.id, { workMinutes: Number(e.target.value) })}
-                        >
-                          <option value={30}>30分</option>
-                          <option value={60}>60分</option>
-                          <option value={90}>90分</option>
-                          <option value={120}>120分</option>
-                          <option value={150}>150分</option>
-                          <option value={180}>180分</option>
-                        </select>
-                     </div>
+              <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:p-5">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <h1 className="text-2xl font-extrabold tracking-tight text-white">今日の準備</h1>
+                    <span className="rounded-md border border-amber-400/50 bg-amber-500/10 px-2 py-1 text-[11px] font-bold text-amber-300">
+                      入力中
+                    </span>
                   </div>
-                </div>
-                );
-              })}
 
-              {visits.length < visitLimit ? (
-                <button
-                  onClick={handleAddVisit}
-                  className="w-full py-6 border border-dashed border-ui rounded-xl flex flex-col items-center justify-center text-secondary hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
-                >
-                  <Plus className="w-6 h-6 mb-1 text-blue-500" />
-                  <span className="text-xs font-bold uppercase tracking-widest">
-                    訪問先を追加 ({visits.length}/{visitLimit})
-                  </span>
-                </button>
-              ) : userPlan === 'free' ? (
-                <button
-                  onClick={() => promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`)}
-                  className="w-full py-6 border border-dashed border-amber-500/40 bg-amber-500/5 rounded-xl flex flex-col items-center justify-center text-amber-300 hover:bg-amber-500/10 transition-all"
-                >
-                  <span className="text-base mb-1">⚡</span>
-                  <span className="text-xs font-bold uppercase tracking-widest">Proで{getVisitLimit('pro')}件まで解放</span>
-                  <span className="text-[10px] mt-1 text-amber-300/70">月額¥780</span>
-                </button>
-              ) : (
-                <div className="w-full py-4 text-center text-xs text-secondary">
-                  上限 {visitLimit}件に到達しました
-                </div>
-              )}
-            </div>
-
-            {/* Lunch Break Settings */}
-            <div className="bg-card p-4 rounded-xl border border-ui mt-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <Utensils className="w-4 h-4 text-orange-400" />
-                  <h3 className="text-xs font-bold text-secondary uppercase tracking-tight">
-                    ランチ・休憩時間
-                  </h3>
-                </div>
-              </div>
-              <div className="grid grid-cols-5 gap-2">
-                {[0, 15, 30, 45, 60].map(minutes => {
-                  const selected = (settings.lunchBreakMinutes || 0) === minutes;
-                  return (
-                    <button
-                      key={minutes}
-                      onClick={() => setSettings({ ...settings, lunchBreakMinutes: minutes })}
-                      className={cn(
-                        "py-2 rounded-lg border text-xs font-bold transition-all",
-                        selected
-                          ? "bg-orange-500/20 border-orange-500/50 text-orange-200"
-                          : "bg-slate-800/50 border-ui text-secondary hover:bg-slate-800 hover:text-white"
-                      )}
-                    >
-                      {minutes === 0 ? 'なし' : `${minutes}分`}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[9px] text-slate-500 mt-2 font-medium">
-                店舗検索は使わず、ルート中盤に指定した休憩時間だけを挿入します。
-              </p>
-            </div>
-
-            {/* AI Input — voice/camera/text */}
-            <div className="bg-card p-4 rounded-xl border border-ui mt-4">
-              <div className="flex items-center justify-between mb-3 gap-2">
-                <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
-                  <ClipboardList className="w-4 h-4 text-blue-400" /> AIで一括入力
-                </h3>
-                {isDemoMode() && (
-                  aiUnlocked ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-bold text-green-300 bg-green-500/10 border border-green-500/30 px-2 py-0.5 rounded">
-                        今日: {aiUsage.used}/{aiUsage.limit}
-                      </span>
+                  <section className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4 shadow-inner shadow-white/[0.02]">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h2 className="text-sm font-extrabold text-white">ルートの基本設定</h2>
                       <button
-                        onClick={() => { lockAI(); setAIUnlocked(false); }}
-                        title="AIアクセスをロック"
-                        className="text-[10px] text-slate-500 hover:text-slate-300"
+                        onClick={() => setShowStartEndSettings(true)}
+                        title="起点・終点・出発時刻を編集"
+                        className="rounded-lg border border-slate-700 bg-slate-950/50 p-2 text-slate-300 hover:border-amber-400/40 hover:text-amber-200"
                       >
-                        🔒
+                        <SettingsIcon className="h-4 w-4" />
                       </button>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => setShowAIUnlock(true)}
-                      className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40 hover:bg-amber-500/25"
-                    >
-                      🔒 パスワード解除
-                    </button>
-                  )
-                )}
-              </div>
-
-              {/* Prominent CTA row: camera + voice */}
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <CameraCTA onImage={handleParseImage} disabled={isParsingImage} />
-                <VoiceCTA onText={(t) => setInputText(t)} />
-              </div>
-
-              <div className="relative">
-                <textarea
-                  className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-sm resize-none h-24 focus:border-blue-500/50"
-                  placeholder={isParsingImage
-                    ? "AIが画像をスキャンしています..."
-                    : "またはメール本文を貼り付け / 音声入力でテキスト化"}
-                  value={isParsingImage ? "Analyzing image..." : inputText}
-                  disabled={isParsingImage}
-                  onChange={(e) => setInputText(e.target.value)}
-                />
-                {isParsing && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 rounded-lg">
-                    <div className="flex items-center gap-2 text-xs text-blue-300">
-                      <div className="w-4 h-4 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
-                      AIで解析中...
+                    <div className="grid grid-cols-3 divide-x divide-slate-700 rounded-lg border border-slate-700/70 bg-slate-950/30">
+                      <div className="min-w-0 p-3 text-center">
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">起点</span>
+                        <p className="truncate text-sm font-extrabold text-white">
+                          <MapPin className="mr-1 inline h-4 w-4 text-emerald-400" />
+                          {settings.homeAddress ? '現在地' : '未設定'}
+                        </p>
+                      </div>
+                      <div className="p-3 text-center">
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">出発</span>
+                        <p className="text-2xl font-extrabold num-font text-white">{settings.startTime || '09:00'}</p>
+                      </div>
+                      <div className="min-w-0 p-3 text-center">
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">終点</span>
+                        <p className="truncate text-sm font-extrabold text-white">
+                          <MapPin className="mr-1 inline h-4 w-4 text-blue-400" />
+                          {settings.endLocation === 'home' && '本社'}
+                          {settings.endLocation === 'none' && '解散'}
+                          {settings.endLocation === 'custom' && (settings.customEndAddress || '未設定')}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  </section>
+
+                  <section className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-3 sm:p-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-base font-extrabold text-white">訪問先リスト</h2>
+                        <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                          {visits.length}件入力済み
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowTasksSettings(true)}
+                          className="rounded-lg border border-slate-700 bg-slate-950/45 px-2.5 py-1.5 text-[10px] font-bold text-blue-300 hover:bg-blue-500/10"
+                        >
+                          作業設定
+                        </button>
+                        {visits.length > 0 && (
+                          <button
+                            onClick={() => setVisits([])}
+                            className="rounded-lg px-2 py-1.5 text-red-300 hover:bg-red-500/10"
+                            title="訪問先をリセット"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="hidden rounded-lg border border-slate-700/70 bg-slate-950/25 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-slate-500 lg:grid lg:grid-cols-[32px_72px_minmax(170px,1fr)_150px_132px_82px_32px] lg:gap-3">
+                      <span>#</span>
+                      <span>作業種別</span>
+                      <span>住所</span>
+                      <span>作業設定</span>
+                      <span>訪問時間</span>
+                      <span>滞在予定</span>
+                      <span />
+                    </div>
+
+                    <div className="mt-2 space-y-2">
+                      {visits.map((visit, idx) => {
+                        const validation = getVisitValidation(visit);
+                        const hasErrors = validation.errors.length > 0;
+                        const hasWarnings = !hasErrors && validation.warnings.length > 0;
+                        return (
+                          <div
+                            key={visit.id}
+                            className={cn(
+                              "rounded-xl border bg-slate-950/25 p-3 transition-all lg:grid lg:grid-cols-[32px_72px_minmax(170px,1fr)_150px_132px_82px_32px] lg:items-center lg:gap-3",
+                              hasErrors ? "border-red-500/50" : hasWarnings ? "border-yellow-500/35" : "border-slate-700/70"
+                            )}
+                          >
+                            <div className="mb-3 flex items-center justify-between lg:mb-0">
+                              <span
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-xs font-extrabold text-white shadow-md"
+                                style={{ background: difficultyColor(visit.difficulty).work }}
+                              >
+                                {idx + 1}
+                              </span>
+                              <button
+                                onClick={() => handleDeleteVisit(visit.id)}
+                                className="rounded-lg p-1.5 text-slate-500 hover:bg-red-500/10 hover:text-red-300 lg:hidden"
+                                title="削除"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                            <select
+                              className="mb-2 w-full rounded-lg border border-slate-700 bg-slate-950/50 px-2 py-2 text-sm font-extrabold text-white outline-none focus:border-amber-400/50 lg:mb-0 lg:border-transparent lg:bg-transparent lg:px-0"
+                              value={visit.taskId || ''}
+                              onChange={(e) => {
+                                const tId = e.target.value;
+                                const task = settings.tasks.find(t => t.id === tId);
+                                handleUpdateVisit(visit.id, {
+                                  taskId: tId,
+                                  workMinutes: task ? task.defaultMinutes : visit.workMinutes
+                                });
+                              }}
+                            >
+                              <option value="" disabled className="text-gray-500">作業を選択...</option>
+                              {settings.tasks.map(t => (
+                                <option key={t.id} value={t.id} className="bg-[#1A1D23]">{t.name}</option>
+                              ))}
+                            </select>
+                            <textarea
+                              className="mb-2 min-h-[44px] w-full resize-none rounded-lg border border-slate-700 bg-slate-950/45 px-3 py-2 text-xs leading-relaxed text-slate-100 outline-none focus:border-amber-400/50 lg:mb-0"
+                              placeholder="住所"
+                              rows={2}
+                              value={visit.address}
+                              onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
+                            />
+                            <div className="mb-2 lg:mb-0">
+                              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 lg:hidden">難易度</span>
+                              <DifficultySelector
+                                value={visit.difficulty}
+                                onChange={(d) => handleUpdateVisit(visit.id, { difficulty: d })}
+                              />
+                            </div>
+                            <div className="mb-2 lg:mb-0">
+                              <span className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-500 lg:hidden">訪問時間</span>
+                              <TimeWindowInput visit={visit} onChange={(u) => handleUpdateVisit(visit.id, u)} />
+                            </div>
+                            <select
+                              className="w-full rounded-lg border border-slate-700 bg-slate-950/50 px-2 py-2 text-xs font-extrabold text-white outline-none focus:border-amber-400/50"
+                              value={visit.workMinutes}
+                              onChange={(e) => handleUpdateVisit(visit.id, { workMinutes: Number(e.target.value) })}
+                            >
+                              <option value={30}>30分</option>
+                              <option value={60}>60分</option>
+                              <option value={90}>90分</option>
+                              <option value={120}>120分</option>
+                              <option value={150}>150分</option>
+                              <option value={180}>180分</option>
+                            </select>
+                            <button
+                              onClick={() => handleDeleteVisit(visit.id)}
+                              className="hidden rounded-lg p-2 text-slate-500 hover:bg-red-500/10 hover:text-red-300 lg:block"
+                              title="削除"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                            {(validation.errors.length > 0 || validation.warnings.length > 0) && (
+                              <div className="mt-2 space-y-1 lg:col-span-7">
+                                {validation.errors.map(message => (
+                                  <p key={message} className="flex items-center gap-1.5 text-[10px] font-bold text-red-300">
+                                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                                    {message}
+                                  </p>
+                                ))}
+                                {validation.warnings.map(message => (
+                                  <p key={message} className="flex items-center gap-1.5 text-[10px] font-bold text-yellow-300">
+                                    <AlertTriangle className="h-3 w-3 shrink-0" />
+                                    {message}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {visits.length < visitLimit ? (
+                        <button
+                          onClick={handleAddVisit}
+                          className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-600 bg-slate-950/20 px-4 py-3 text-sm font-bold text-slate-300 transition-all hover:border-amber-400/50 hover:bg-amber-500/5 hover:text-amber-200"
+                        >
+                          <Plus className="h-4 w-4" />
+                          訪問先を追加
+                        </button>
+                      ) : userPlan === 'free' ? (
+                        <button
+                          onClick={() => promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`)}
+                          className="flex w-full items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm font-bold text-amber-300 hover:bg-amber-500/10"
+                        >
+                          Proで{getVisitLimit('pro')}件まで解放
+                        </button>
+                      ) : (
+                        <div className="w-full rounded-lg border border-slate-700 py-3 text-center text-xs text-secondary">
+                          上限 {visitLimit}件に到達しました
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
+
+                <aside className="space-y-4">
+                  <section className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4">
+                    <div className="mb-3 flex items-center gap-2">
+                      <Utensils className="h-4 w-4 text-orange-300" />
+                      <h2 className="text-sm font-extrabold text-white">ランチ・休憩時間</h2>
+                    </div>
+                    <div className="grid grid-cols-5 gap-1 overflow-hidden rounded-lg border border-slate-700 bg-slate-950/35 p-1">
+                      {[0, 15, 30, 45, 60].map(minutes => {
+                        const selected = (settings.lunchBreakMinutes || 0) === minutes;
+                        return (
+                          <button
+                            key={minutes}
+                            onClick={() => setSettings({ ...settings, lunchBreakMinutes: minutes })}
+                            className={cn(
+                              "rounded-md py-2 text-[11px] font-extrabold transition-all",
+                              selected
+                                ? "bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/50"
+                                : "text-slate-400 hover:bg-slate-800 hover:text-white"
+                            )}
+                          >
+                            {minutes === 0 ? 'なし' : `${minutes}分`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-2 text-[10px] leading-relaxed text-slate-500">移動時間に含めず休憩時間を確保します</p>
+                  </section>
+
+                  <section className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h2 className="flex items-center gap-2 text-sm font-extrabold text-white">
+                        <ClipboardList className="h-4 w-4 text-blue-300" /> AIで一括入力
+                      </h2>
+                      {isDemoMode() && (
+                        aiUnlocked ? (
+                          <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+                            今日: {aiUsage.used}/{aiUsage.limit}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setShowAIUnlock(true)}
+                            className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] font-bold text-amber-300"
+                          >
+                            解除
+                          </button>
+                        )
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <CameraCTA onImage={handleParseImage} disabled={isParsingImage} />
+                      <VoiceCTA onText={(t) => setInputText(t)} />
+                    </div>
+                    <div className="relative mt-3">
+                      <textarea
+                        className="h-28 w-full resize-none rounded-lg border border-slate-700 bg-slate-950/45 p-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-amber-400/50"
+                        placeholder={isParsingImage ? "AIが画像をスキャンしています..." : "メールやメモを貼り付ける"}
+                        value={isParsingImage ? "Analyzing image..." : inputText}
+                        disabled={isParsingImage}
+                        onChange={(e) => setInputText(e.target.value)}
+                      />
+                      {isParsing && (
+                        <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-950/70">
+                          <div className="flex items-center gap-2 text-xs text-amber-200">
+                            <div className="h-4 w-4 animate-spin rounded-full border-2 border-amber-300/25 border-t-amber-300" />
+                            AIで解析中...
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleParseText}
+                      disabled={isParsing || !inputText.trim()}
+                      className="mt-3 w-full rounded-lg border border-slate-700 bg-slate-950/45 py-2.5 text-xs font-bold text-slate-300 transition-colors hover:bg-slate-800 disabled:opacity-40"
+                    >
+                      テキストから訪問先を抽出
+                    </button>
+                  </section>
+
+                  <section className="rounded-xl border border-slate-700/70 bg-slate-900/60 p-4">
+                    <h2 className="mb-3 flex items-center gap-2 text-sm font-extrabold text-white">
+                      <CheckCircle2 className="h-4 w-4 text-slate-400" /> 入力のヒント
+                    </h2>
+                    <div className="space-y-2 text-[11px] font-medium text-slate-400">
+                      <p className="flex items-center gap-2"><CheckCircle2 className="h-3.5 w-3.5 text-slate-500" />住所は部分入力でも検索できます</p>
+                      <p className="flex items-center gap-2"><CheckCircle2 className="h-3.5 w-3.5 text-slate-500" />訪問時間は「範囲」が最も柔軟です</p>
+                      <p className="flex items-center gap-2"><CheckCircle2 className="h-3.5 w-3.5 text-slate-500" />滞在予定は移動時間に影響します</p>
+                    </div>
+                  </section>
+                </aside>
               </div>
-              <button
-                onClick={handleParseText}
-                disabled={isParsing || !inputText.trim()}
-                className="w-full py-3 mt-3 bg-blue-600/20 border border-blue-500/30 hover:bg-blue-600/30 text-blue-200 rounded-lg text-xs font-bold uppercase tracking-wider disabled:opacity-40 transition-colors"
-              >
-                {isParsing ? "読み取り中..." : "テキストから訪問先を抽出"}
-              </button>
+
+              <div className="hidden border-t border-ui bg-slate-950/70 p-4 lg:grid lg:grid-cols-[170px_1fr] lg:gap-4">
+                <button
+                  disabled={visits.length === 0 || isOptimizing}
+                  onClick={handleOptimizeFromCurrentLocation}
+                  className={cn(
+                    "flex items-center justify-center gap-2 rounded-lg border py-3 text-sm font-extrabold transition-all disabled:opacity-40",
+                    userPlan === 'pro'
+                      ? "border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                      : "border-amber-500/30 bg-slate-900 text-amber-300"
+                  )}
+                >
+                  <Navigation className="h-5 w-5" /> 現在地から
+                </button>
+                <button
+                  disabled={visits.length === 0 || isOptimizing}
+                  onClick={() => handleOptimize()}
+                  className="flex items-center justify-center gap-3 rounded-lg bg-amber-500 py-3 text-base font-extrabold text-slate-950 shadow-lg shadow-amber-950/30 transition-all hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500"
+                >
+                  {isOptimizing ? (
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-950/20 border-t-slate-950" />
+                  ) : (
+                    <Navigation className="h-5 w-5" />
+                  )}
+                  ルートを計算
+                </button>
+              </div>
             </div>
           </motion.div>
         ) : (
@@ -1257,358 +1860,70 @@ function MainApp() {
           >
             {/* Sidebar (Route List). Full-width on mobile, fixed 420px on desktop. */}
             <aside className="w-full lg:w-[420px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl lg:overflow-y-auto custom-scrollbar">
-              {/* Savings Banner */}
-              {baseline && (() => {
-                const FUEL_KM_PER_L = 12;
-                const GAS_YEN_PER_L = 180;
-                const planDist = activePlan.totalDistanceKm;
-                const planDur = activePlan.totalDurationMin;
-                const savedKm = Math.max(0, baseline.totalDistanceKm - planDist);
-                const savedMin = Math.max(0, baseline.totalDurationMin - planDur);
-                const savedYen = Math.round((savedKm / FUEL_KM_PER_L) * GAS_YEN_PER_L);
-                const savedPct = baseline.totalDistanceKm > 0
-                  ? Math.round((savedKm / baseline.totalDistanceKm) * 100)
-                  : 0;
-                if (savedKm < 0.1 && savedMin < 1) return null;
-                return (
-                  <div className="border-b border-ui bg-gradient-to-br from-green-950/40 to-emerald-950/20 px-4 py-3">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-base">✓</span>
-                      <span className="text-[10px] uppercase tracking-wider font-bold text-green-300">入力順巡回比 節約効果</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-center">
-                      <div>
-                        <div className="text-xl font-bold text-green-300 num-font">−{savedKm.toFixed(1)}</div>
-                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">km短縮</div>
-                      </div>
-                      <div>
-                        <div className="text-xl font-bold text-green-300 num-font">−{savedMin}</div>
-                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">分節約</div>
-                      </div>
-                      <div>
-                        <div className="text-xl font-bold text-green-300 num-font">¥{savedYen.toLocaleString()}</div>
-                        <div className="text-[9px] text-green-200/70 font-bold uppercase tracking-wider">ガソリン代</div>
-                      </div>
-                    </div>
-                    {savedPct > 0 && (
-                      <p className="text-[10px] text-green-200/60 mt-2 text-center">
-                        距離ベースで <strong className="text-green-300">{savedPct}%</strong> 短縮（燃費12km/L・¥180/L 想定）
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
+              <RouteSummaryPanel
+                activePlan={activePlan}
+                scores={planScores}
+                activePlanIdx={activePlanIdx}
+                baseline={baseline}
+                onSelectPlan={setActivePlanIdx}
+              />
 
-              {/* Recommended Plan */}
-              {displayPlans.length > 0 && (() => {
-                const scores = computePlanScores(displayPlans);
-                const recommended = scores[0];
-                if (!recommended) return null;
-                const currentScore = scores.find(s => s.idx === activePlanIdx);
-                return (
-                  <div className="border-b border-ui bg-blue-950/30 px-4 py-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="text-[10px] uppercase tracking-wider font-bold text-blue-300">おすすめ案</span>
-                          {activePlanIdx === recommended.idx && (
-                            <span className="text-[9px] font-bold text-green-300 bg-green-500/10 border border-green-500/30 rounded px-1.5 py-0.5">
-                              選択中
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-baseline gap-2">
-                          <span className="text-lg font-extrabold text-white">{recommended.plan.label}</span>
-                          <span className="text-2xl font-extrabold num-font text-blue-300">{recommended.score}</span>
-                          <span className="text-xs font-bold text-blue-200/70">/100点</span>
-                        </div>
-                        <p className="text-[10px] text-blue-100/65 mt-1 leading-relaxed">
-                          移動 {recommended.plan.totalDurationMin}分 ・ 距離 {recommended.plan.totalDistanceKm.toFixed(1)}km ・
-                          警告 {recommended.warningCount}件 ・ 超過 {recommended.violationCount}件で評価
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => setActivePlanIdx(recommended.idx)}
-                        className="shrink-0 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-colors disabled:opacity-50"
-                        disabled={activePlanIdx === recommended.idx}
-                      >
-                        表示
-                      </button>
-                    </div>
-                    {currentScore && currentScore.idx !== recommended.idx && (
-                      <p className="text-[10px] text-secondary mt-2">
-                        現在の案: <span className="font-bold text-white">{currentScore.plan.label}</span> {currentScore.score}/100点
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
+              <PlanTabs
+                plans={displayPlans}
+                scores={planScores}
+                activePlanIdx={activePlanIdx}
+                onSelectPlan={setActivePlanIdx}
+              />
 
-              {/* Plan Tabs */}
-              <div className="p-4 flex gap-2 border-b border-ui bg-bg/50 backdrop-blur-sm">
-                {(() => {
-                  const scores = computePlanScores(displayPlans);
-                  const scoreByIdx = new globalThis.Map(scores.map(score => [score.idx, score]));
-                  const recommendedIdx = scores[0]?.idx;
-                  return displayPlans.map((plan, idx) => {
-                    const score = scoreByIdx.get(idx);
-                    return (
-                      <button
-                        key={plan.id}
-                        onClick={() => setActivePlanIdx(idx)}
-                        className={cn(
-                          "flex-1 py-2 text-center text-[10px] font-bold rounded-md transition-all border",
-                          activePlanIdx === idx ? "bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40" : "bg-slate-800 border-ui text-secondary hover:bg-slate-700",
-                          idx === recommendedIdx && activePlanIdx !== idx && "border-blue-500/50 text-blue-200"
-                        )}
-                      >
-                        <span className="block">{plan.label}</span>
-                        {score && (
-                          <span className="block mt-0.5 text-[9px] opacity-80">
-                            {score.score}点{idx === recommendedIdx ? '・推奨' : ''}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  });
-                })()}
+              <div className="border-b border-ui px-4 pb-3 pt-4">
+                <ScheduleClock plan={activePlan} tasks={settings.tasks} variant={isDesktop ? 'desktop' : 'mobile'} />
               </div>
 
-              {/* Schedule Clock */}
-              <div className="px-4 pt-4 pb-3 border-b border-ui">
-                <ScheduleClock plan={activePlan} tasks={settings.tasks} />
-              </div>
+              <NextVisitCard
+                plan={activePlan}
+                settings={settings}
+                completedVisitIds={completedVisitIds}
+                onComplete={toggleCompleted}
+                onNavigateVisit={openVisitNavigation}
+                onNavigatePlan={openPlanNavigation}
+              />
 
-              {/* Mobile-only: map directly under the schedule clock.
-                  On desktop the map lives in its own right-side section below. */}
               {!isDesktop && (
-                <>
-                  <div className="h-[360px] relative border-b border-ui bg-bg">
-                    <MapComponent plan={activePlan} settings={settings} />
-                  </div>
-                  <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
-                    <div className="flex items-center gap-3">
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" /><span className="font-bold text-gray-300">正常</span></span>
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#fbbf24]" /><span className="font-bold text-gray-300">余裕少</span></span>
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_#f87171]" /><span className="font-bold text-gray-300">遅延懸念</span></span>
+                <div className="mx-3 mb-3 overflow-hidden rounded-xl border border-ui bg-slate-900/60">
+                  <button
+                    onClick={() => setShowMobileMap(open => !open)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left text-xs font-bold uppercase tracking-widest text-slate-300"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Layers className="h-4 w-4 text-amber-300" /> 地図を見る
+                    </span>
+                    <ChevronRight className={cn("h-4 w-4 transition-transform", showMobileMap && "rotate-90")} />
+                  </button>
+                  {showMobileMap && (
+                    <div className="h-[340px] border-t border-ui bg-bg">
+                      <MapComponent plan={activePlan} settings={settings} />
                     </div>
-                    <span className="text-secondary italic">案: {activePlan.label}</span>
-                  </div>
-                </>
+                  )}
+                </div>
               )}
 
-              {/* Path List */}
-              <div className="p-4 space-y-3 custom-scrollbar">
-                {activePlan.legs.filter(isCompleteLeg).map((leg, idx) => {
-                  const lunchBreak = activePlan.lunchBreak;
-                  const visit = leg.visitId
-                    ? activePlan.order.find(v => v.id === leg.visitId)
-                    : null;
-                  const visitOrderIndex = visit
-                    ? activePlan.order.findIndex(v => v.id === visit.id) + 1
-                    : idx + 1;
-                  const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
-                  return (
-                  <div key={idx} className="relative">
-                    {leg.visitId && visit ? (
-                      <motion.div
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: idx * 0.05 }}
-                        className={cn(
-                          "card-bg p-4 rounded-xl border relative overflow-hidden transition-all",
-                          isCompleted ? "border-green-500/40 opacity-60" :
-                          leg.status === 'violation' ? "border-red-500/30" : "border-ui"
-                        )}
-                      >
-                        {/* Difficulty stripe — same color as the matching
-                            clock arc and map marker for fast cross-reference. */}
-                        <div
-                          className="absolute left-0 top-0 w-1 h-full"
-                          style={{ background: difficultyColor(visit.difficulty).work }}
-                        />
+              <RouteTimeline
+                plan={activePlan}
+                settings={settings}
+                completedVisitIds={completedVisitIds}
+                activePlanId={activePlan.id}
+                customOrder={customOrder}
+                onMoveCustomVisit={moveCustomVisit}
+                onToggleCompleted={toggleCompleted}
+                onNavigateVisit={openVisitNavigation}
+              />
 
-                        <div className="flex justify-between items-start mb-2">
-                          <div className="flex items-center gap-2">
-                             <div
-                               className="px-2 py-0.5 rounded text-[10px] font-bold num-font text-white"
-                               style={{ background: difficultyColor(visit.difficulty).work }}
-                             >
-                               {visitOrderIndex}番 {leg.arrivalTime}着
-                             </div>
-                             <div className={cn(
-                               "status-dot w-2 h-2 rounded-full",
-                               leg.status === 'ok' ? "bg-green-400 shadow-[0_0_8px_#4ade80]" : leg.status === 'warning' ? "bg-yellow-400 shadow-[0_0_8px_#fbbf24]" : "bg-red-400 shadow-[0_0_8px_#f87171]"
-                             )} />
-                          </div>
-                          <div className="flex gap-1">
-                            {activePlan.id === 'X' && (
-                              <>
-                                <button
-                                  onClick={() => moveCustomVisit(visit.id, -1)}
-                                  disabled={customOrder.indexOf(visit.id) <= 0}
-                                  title="上に移動"
-                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
-                                >
-                                  <ArrowUp className="w-4 h-4 text-blue-400" />
-                                </button>
-                                <button
-                                  onClick={() => moveCustomVisit(visit.id, 1)}
-                                  disabled={customOrder.indexOf(visit.id) >= customOrder.length - 1}
-                                  title="下に移動"
-                                  className="p-1.5 hover:bg-blue-500/10 disabled:opacity-30 disabled:hover:bg-transparent rounded"
-                                >
-                                  <ArrowDown className="w-4 h-4 text-blue-400" />
-                                </button>
-                              </>
-                            )}
-                            <button
-                              onClick={() => toggleCompleted(visit.id)}
-                              title={isCompleted ? '完了を取り消す' : '完了にする'}
-                              className={cn(
-                                "p-1.5 rounded transition-colors",
-                                isCompleted ? "bg-green-500/30 text-green-200" : "hover:bg-green-500/10 text-green-400"
-                              )}
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(visit.address)}`, '_blank')}
-                              title="この訪問先にナビ"
-                              className="p-1.5 hover:bg-blue-500/10 rounded"
-                            >
-                              <Navigation className="w-4 h-4 text-blue-400" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <h3 className={cn("text-base font-bold mb-0.5 truncate", isCompleted && "line-through text-secondary")}>
-                          {(() => {
-                            const task = settings.tasks.find(t => t.id === visit.taskId);
-                            if (task) return task.name;
-                            return '訪問先';
-                          })()}
-                        </h3>
-                        <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
-                          {visit.address}
-                        </p>
-
-                        <div className="grid grid-cols-2 gap-2 text-[11px]">
-                          <div className="bg-slate-800/50 p-2 rounded border border-ui">
-                            <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">指定時間</span>
-                            <span className={cn(
-                              "font-bold",
-                              leg.status === 'ok' ? "text-green-400" : leg.status === 'warning' ? "text-yellow-400" : "text-red-400"
-                            )}>
-                              {(() => {
-                                const tw = visit.timeWindow;
-                                if (!tw) return "指定なし";
-                                if (tw.start && tw.end) return `${tw.start}-${tw.end}`;
-                                if (tw.start) return `${tw.start} 以降`;
-                                if (tw.end) return `${tw.end} 以前`;
-                                return "指定なし";
-                              })()}
-                            </span>
-                          </div>
-                          <div className="bg-slate-800/50 p-2 rounded border border-ui">
-                            <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">滞在 / 完了</span>
-                            <span className="font-bold">{visit.workMinutes + 30}分 → {leg.endTime}</span>
-                            <span className="block text-[9px] text-secondary font-medium mt-0.5">準備15+作業{visit.workMinutes}+撤収15</span>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ) : (
-                      <div className="flex flex-col gap-2 relative">
-                        <div className="h-4 flex items-center justify-center">
-                          <div className="w-px h-full bg-slate-800" />
-                        </div>
-                        <div className="card-bg p-4 rounded-xl border border-ui relative flex justify-between items-center bg-slate-900/40">
-                             <div className="flex flex-col">
-                               <div className="flex items-center gap-2 mb-1">
-                                 <span className="text-xs font-bold text-secondary uppercase tracking-wider">終点到着 ({leg.arrivalTime})</span>
-                               </div>
-                               <h3 className="text-sm font-bold">{settings.endLocation === 'home' ? settings.homeAddress : settings.customEndAddress}</h3>
-                             </div>
-                             <CheckCircle2 className="w-5 h-5 text-secondary" />
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Lunch Break Injection */}
-                    {lunchBreak && lunchBreak.afterVisitId === leg.visitId && (
-                       <div className="relative mt-3">
-                         <div className="h-4 flex items-center justify-center absolute -top-4 left-0 right-0">
-                           <div className="w-px h-full bg-slate-800" />
-                         </div>
-                         <motion.div 
-                           initial={{ opacity: 0, y: 10 }}
-                           animate={{ opacity: 1, y: 0 }}
-                            className="bg-orange-500/10 p-4 rounded-xl border border-orange-500/30"
-                         >
-                            <div className="flex items-center gap-2 text-orange-400">
-                               <Utensils className="w-3.5 h-3.5" />
-                               <span className="text-[10px] font-bold uppercase tracking-widest">
-                                 昼食・休憩 {lunchBreak.durationMin}分
-                               </span>
-                            </div>
-                            <p className="text-xs font-bold text-orange-100 mt-2 num-font">
-                              {lunchBreak.startTime} - {lunchBreak.endTime}
-                            </p>
-                            <p className="text-[10px] text-orange-200/60 mt-1">
-                              店舗検索は使わず、時間だけをスケジュールに挿入しています。
-                            </p>
-                         </motion.div>
-                       </div>
-                    )}
-                  </div>
-                  );
-                })}
-              </div>
-
-              {/* Bottom CTA */}
-              <div className="p-4 border-t border-ui glass space-y-3">
-                {activePlan.order.length > 0 && (() => {
-                  const total = activePlan.order.length;
-                  const done = activePlan.order.filter(v => completedVisitIds.has(v.id)).length;
-                  const pct = total > 0 ? (done / total) * 100 : 0;
-                  return (
-                    <div>
-                      <div className="flex justify-between items-baseline mb-1">
-                        <span className="text-[10px] uppercase tracking-wider font-bold text-secondary">本日の進捗</span>
-                        <span className="text-xs font-bold num-font text-white">{done} / {total} 件完了</span>
-                      </div>
-                      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-green-500 to-emerald-400 transition-all duration-300"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })()}
-
-                <button
-                  onClick={() => {
-                    const plan = activePlan;
-                    // Skip already-completed visits in the external map handoff
-                    const remaining = plan.order.filter(v => !completedVisitIds.has(v.id));
-                    if (remaining.length === 0) {
-                      showNotice({ kind: 'success', title: '本日の訪問はすべて完了しました', detail: 'お疲れさまでした！' });
-                      return;
-                    }
-                    let ways = [...remaining.map(v => v.address)];
-                    const waypoints = ways.map(w => encodeURIComponent(w)).join('/');
-                    const dest = settings.endLocation === 'home' ? settings.homeAddress : (settings.endLocation === 'custom' ? settings.customEndAddress : remaining[remaining.length - 1].address);
-                    window.open(`https://www.google.com/maps/dir/${encodeURIComponent(settings.homeAddress)}/${waypoints}/${encodeURIComponent(dest || '')}`, '_blank');
-                  }}
-                  className="w-full py-4 bg-blue-600 hover:bg-blue-500 rounded-xl font-extrabold text-sm shadow-xl shadow-blue-900/30 flex items-center justify-center gap-3 transition-colors active:scale-[0.98]"
-                >
-                  <Navigation className="w-5 h-5" /> Google Maps でナビ開始
-                </button>
-                <button onClick={() => setActiveTab('input')} className="w-full py-2 text-[10px] text-secondary hover:text-white transition-colors uppercase font-bold tracking-widest">
-                  条件編集に戻る
-                </button>
-              </div>
+              <OperationFooter
+                plan={activePlan}
+                completedVisitIds={completedVisitIds}
+                onNavigatePlan={openPlanNavigation}
+                onEditConditions={() => setActiveTab('input')}
+              />
             </aside>
 
             {/* Desktop-only: large map as the main right-side panel. */}
@@ -1618,32 +1933,51 @@ function MainApp() {
                   <MapComponent plan={activePlan} settings={settings} />
                 </div>
 
-                {/* Floating totals on the map */}
-                <div className="absolute top-6 left-6 z-10">
-                  <div className="glass p-4 rounded-2xl border border-ui shadow-2xl flex gap-8">
-                    <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動時間</span>
-                      <span className="text-2xl num-font">{activePlan.totalDurationMin}<span className="text-xs font-normal text-secondary ml-1">min</span></span>
+                {(() => {
+                  const health = getRouteHealth(activePlan);
+                  const tone = healthToneClasses(health.tone);
+                  const activeScore = planScores.find(score => score.idx === activePlanIdx);
+                  return (
+                    <div className="absolute left-6 right-6 top-6 z-10">
+                      <div className="flex items-center justify-between gap-4 rounded-xl border border-ui bg-slate-950/82 p-4 shadow-2xl backdrop-blur-md">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className={cn("h-2.5 w-2.5 rounded-full", tone.dot)} />
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">運行ステータス</span>
+                            <span className={cn("rounded-full border px-2 py-0.5 text-[10px] font-bold", tone.chip)}>{health.label}</span>
+                          </div>
+                          <p className="mt-1 text-sm font-bold text-white">{activePlan.label} ・ {health.detail}</p>
+                        </div>
+                        <div className="grid grid-cols-4 gap-5 text-right">
+                          <div>
+                            <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">終了</span>
+                            <span className="text-2xl font-extrabold num-font text-amber-200">{activePlan.endTime}</span>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">移動</span>
+                            <span className="text-2xl font-extrabold num-font text-white">{activePlan.totalDurationMin}<span className="text-xs text-slate-400">分</span></span>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">距離</span>
+                            <span className="text-2xl font-extrabold num-font text-white">{activePlan.totalDistanceKm.toFixed(1)}<span className="text-xs text-slate-400">km</span></span>
+                          </div>
+                          <div>
+                            <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">Score</span>
+                            <span className="text-2xl font-extrabold num-font text-white">{activeScore?.score ?? '--'}<span className="text-xs text-slate-400">点</span></span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">総移動距離</span>
-                      <span className="text-2xl num-font">{activePlan.totalDistanceKm.toFixed(1)}<span className="text-xs font-normal text-secondary ml-1">km</span></span>
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-[10px] uppercase tracking-wider text-secondary font-bold mb-1">最終完了予定</span>
-                      <span className="text-2xl num-font text-blue-400">{activePlan.endTime}</span>
-                    </div>
-                  </div>
-                </div>
+                  );
+                })()}
 
-                {/* Footer legend strip */}
-                <div className="absolute bottom-0 left-0 right-0 h-14 glass border-t border-ui flex items-center px-6 justify-between z-10">
+                <div className="absolute bottom-0 left-0 right-0 z-10 flex h-14 items-center justify-between border-t border-ui bg-slate-950/82 px-6 backdrop-blur-md">
                   <div className="flex gap-6">
-                    <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-green-400 shadow-[0_0_8px_#4ade80]" /><span className="text-xs font-bold text-gray-300">正常</span></div>
-                    <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-yellow-400 shadow-[0_0_8px_#fbbf24]" /><span className="text-xs font-bold text-gray-300">余裕少</span></div>
-                    <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]" /><span className="text-xs font-bold text-gray-300">遅延懸念</span></div>
+                    <div className="flex items-center gap-2"><div className="h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" /><span className="text-xs font-bold text-gray-300">正常</span></div>
+                    <div className="flex items-center gap-2"><div className="h-2.5 w-2.5 rounded-full bg-amber-400 shadow-[0_0_8px_#fbbf24]" /><span className="text-xs font-bold text-gray-300">余裕少</span></div>
+                    <div className="flex items-center gap-2"><div className="h-2.5 w-2.5 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]" /><span className="text-xs font-bold text-gray-300">遅延懸念</span></div>
                   </div>
-                  <div className="text-xs text-secondary italic">案: {activePlan.label}</div>
+                  <div className="text-xs font-bold text-slate-400">案: {activePlan.label}</div>
                 </div>
               </section>
             )}
@@ -1653,37 +1987,36 @@ function MainApp() {
 
       {/* Floating Action Button */}
       {activeTab === 'input' && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#1A1D23] to-transparent z-40">
-          <div className="flex gap-2">
-            <button
-              disabled={visits.length === 0 || isOptimizing}
-              onClick={() => handleOptimize()}
-              className="flex-[2] py-4 bg-blue-600 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-xl font-extrabold text-lg flex items-center justify-center gap-3 shadow-xl shadow-blue-900/40 active:scale-[0.98] transition-all"
-            >
-              {isOptimizing ? (
-                <div className="w-6 h-6 border-4 border-white/20 border-t-white rounded-full animate-spin" />
-              ) : (
-                <>
-                  <Navigation className="w-6 h-6" />
-                  ルートを計算
-                </>
-              )}
-            </button>
+        <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-ui bg-slate-950/90 p-3 backdrop-blur-md lg:hidden">
+          <div className="mx-auto flex max-w-[1320px] gap-2">
             <button
               disabled={visits.length === 0 || isOptimizing}
               onClick={handleOptimizeFromCurrentLocation}
               className={cn(
-                "flex-1 py-4 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-[0.98] transition-all border",
+                "flex-[0.9] rounded-xl border py-3 text-xs font-bold flex flex-col items-center justify-center gap-1 active:scale-[0.98] transition-all",
                 userPlan === 'pro'
-                  ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-400/40 text-white shadow-xl shadow-emerald-900/40"
-                  : "bg-slate-800 border-amber-500/30 text-amber-300 hover:bg-slate-700"
+                  ? "bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-200"
+                  : "bg-slate-900 border-amber-500/30 text-amber-300 hover:bg-slate-800"
               )}
               title={userPlan === 'pro' ? '現在地から再最適化' : 'Pro機能: 現在地から再最適化'}
             >
               <MapPin className="w-5 h-5" />
               <span>{userPlan === 'pro' ? '現在地から' : '現在地 ⚡Pro'}</span>
             </button>
+            <button
+              disabled={visits.length === 0 || isOptimizing}
+              onClick={() => handleOptimize()}
+              className="flex-[1.6] rounded-xl bg-amber-500 py-3 text-slate-950 disabled:bg-gray-700 disabled:text-slate-500 disabled:opacity-70 font-extrabold text-base flex items-center justify-center gap-3 shadow-xl shadow-amber-950/30 active:scale-[0.98] transition-all"
+            >
+              {isOptimizing ? (
+                <div className="w-5 h-5 border-2 border-slate-950/20 border-t-slate-950 rounded-full animate-spin" />
+              ) : (
+                <Navigation className="w-5 h-5" />
+              )}
+              <span>ルートを計算</span>
+            </button>
           </div>
+          <p className="mx-auto mt-2 max-w-[1320px] text-center text-[10px] font-bold text-slate-500">{visits.length}件入力済み</p>
         </div>
       )}
 
@@ -2119,19 +2452,19 @@ function UpgradeModal({ reason, onClose, onUpgrade }: { reason: string; onClose:
 // Sub-components
 function DifficultySelector({ value, onChange }: { value: Difficulty, onChange: (d: Difficulty) => void }) {
   const options = [
-    { v: 1, color: "bg-green-500", label: "低" },
-    { v: 2, color: "bg-yellow-500", label: "中" },
-    { v: 3, color: "bg-red-500", label: "高" },
+    { v: 1, active: "bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-400/45", label: "低" },
+    { v: 2, active: "bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/55", label: "中" },
+    { v: 3, active: "bg-red-500/20 text-red-200 ring-1 ring-red-400/50", label: "高" },
   ];
   return (
-    <div className="flex gap-1 bg-black/20 p-1 rounded-full border border-ui">
+    <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-slate-700 bg-slate-950/35 p-1">
       {options.map((opt) => (
         <button
           key={opt.v}
           onClick={() => onChange(opt.v as Difficulty)}
           className={cn(
-            "w-7 h-7 rounded-full flex items-center justify-center transition-all text-xs font-bold leading-none",
-            value === opt.v ? `${opt.color} text-white shadow-lg ring-1 ring-white/30 scale-110` : "text-gray-500 bg-transparent hover:bg-white/5"
+            "min-w-10 rounded-md px-2 py-1.5 text-[11px] font-extrabold leading-none transition-all",
+            value === opt.v ? opt.active : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
           )}
           title={`優先度: ${opt.label}`}
         >

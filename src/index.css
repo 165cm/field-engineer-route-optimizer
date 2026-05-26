@@ -10,6 +10,9 @@
   --color-success: #4ADE80;
   --color-warning: #FBBF24;
   --color-danger: #F87171;
+  --color-warm: #F59E0B;
+  --color-warm-soft: #FED7AA;
+  --color-ink: #101827;
 }
 
 @layer utilities {
@@ -24,4 +27,3 @@
     @apply font-semibold;
   }
 }
-
