@@ -81,7 +81,6 @@ jobs:
           path: ${{ runner.temp }}/artifact.tar
           retention-days: 1
           if-no-files-found: error
-          archive: false
 
       - name: Deploy to GitHub Pages
         id: deployment
