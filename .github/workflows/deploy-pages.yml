@@ -26,13 +26,9 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Download source
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           curl -fsSL \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA" \
+            "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$GITHUB_SHA" \
             -o source.tar.gz
           tar -xzf source.tar.gz --strip-components=1
 
