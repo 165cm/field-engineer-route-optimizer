@@ -163,10 +163,9 @@ const HOUR_LABELS = Array.from({ length: 12 }, (_, i) => ({
 
 // Outer label radii. tier 0 sits closer to the ring; tier 1 is pushed further
 // out so neighbouring labels that would otherwise overlap stay readable.
-const LABEL_R0 = RADIUS + STROKE / 2 + 18;
-const LABEL_R1 = RADIUS + STROKE / 2 + 34;
-const WINDOW_R = RADIUS + STROKE / 2 + 3;
-const WINDOW_LANE_STEP = 7; // radial offset per stacked (overlapping) window
+const LABEL_R0 = RADIUS + STROKE / 2 + 16;
+const LABEL_R1 = RADIUS + STROKE / 2 + 32;
+const WINDOW_R = RADIUS + STROKE / 2 + 7;
 
 type PlacedLabel = { seg: Segment; angle: number; tier: 0 | 1 };
 
@@ -236,50 +235,6 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
   });
 
   const placedLabels = placeLabels(workSegments);
-
-  // Resolve each window into a drawable arc, then pack overlapping windows
-  // into outward "lanes" so they never sit on top of each other. Earlier
-  // visits get the inner lanes (sorted by start, tie-broken by visit order).
-  type PlacedWindow = {
-    visitIndex: number;
-    arcStart: number;
-    arcEnd: number;
-    isOpenStart: boolean;
-    isOpenEnd: boolean;
-    lane: number;
-  };
-  const WINDOW_PAD = 18; // minutes of angular gap required to share a lane
-  const laneEnds: number[] = []; // last occupied end (minutes) per lane
-  const placedWindows: PlacedWindow[] = windowMarkers
-    .map(m => {
-      let arcStart: number;
-      let arcEnd: number;
-      let isOpenStart = false;
-      let isOpenEnd = false;
-      if (m.startMin !== null && m.endMin !== null) {
-        arcStart = m.startMin;
-        arcEnd = m.endMin;
-      } else if (m.endMin !== null) {
-        arcEnd = m.endMin;
-        arcStart = m.endMin - 90;
-        isOpenStart = true;
-      } else if (m.startMin !== null) {
-        arcStart = m.startMin;
-        arcEnd = m.startMin + 90;
-        isOpenEnd = true;
-      } else {
-        return null;
-      }
-      return { visitIndex: m.visitIndex, arcStart, arcEnd, isOpenStart, isOpenEnd };
-    })
-    .filter((w): w is Omit<PlacedWindow, 'lane'> => w !== null)
-    .sort((a, b) => a.arcStart - b.arcStart || a.visitIndex - b.visitIndex)
-    .map(w => {
-      const lane = laneEnds.findIndex(end => w.arcStart >= end + WINDOW_PAD);
-      const assigned = lane === -1 ? laneEnds.length : lane;
-      laneEnds[assigned] = w.arcEnd;
-      return { ...w, lane: assigned };
-    });
 
   return (
     <div className="flex flex-col items-center gap-2 py-2">
@@ -428,17 +383,28 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
                        far side) + boundary tick at X — reads as "must be by X".
             - 以降 X:   90-min arc forward from X + boundary tick at X — reads
                        as "must be from X onwards". */}
-        {placedWindows.map((w, i) => {
+        {windowMarkers.map((tw, i) => {
           const color = WINDOW_COLOR;
-          const winRadius = WINDOW_R + w.lane * WINDOW_LANE_STEP;
-          const { arcStart, arcEnd, isOpenStart, isOpenEnd } = w;
+          const winRadius = WINDOW_R;
+          let arcStart: number;
+          let arcEnd: number;
+          if (tw.startMin !== null && tw.endMin !== null) {
+            arcStart = tw.startMin;
+            arcEnd = tw.endMin;
+          } else if (tw.endMin !== null) {
+            arcEnd = tw.endMin;
+            arcStart = tw.endMin - 90;
+          } else if (tw.startMin !== null) {
+            arcStart = tw.startMin;
+            arcEnd = tw.startMin + 90;
+          } else {
+            return null;
+          }
           const d = arcPath(arcStart, arcEnd, winRadius);
-          // Boundary ticks bridge inward to the ring edge so the marker reads
-          // as an annotation on the time axis rather than a free-floating arc.
           const renderTick = (timeMin: number) => {
             const angle = minutesToAngle(timeMin);
-            const inner = polar(angle, winRadius - 4);
-            const outer = polar(angle, winRadius + 2);
+            const inner = polar(angle, winRadius - 5);
+            const outer = polar(angle, winRadius + 5);
             return (
               <line
                 x1={inner.x}
@@ -446,19 +412,21 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
                 x2={outer.x}
                 y2={outer.y}
                 stroke={color}
-                strokeWidth={1.25}
+                strokeWidth={2.5}
                 strokeLinecap="round"
               />
             );
           };
-          // Small tangential arrowhead at the OPEN end of a one-sided window so
-          // the direction of the allowed region stays legible while subtle.
+          const isOpenStart = tw.startMin === null; // 以前: tail fades into earlier times
+          const isOpenEnd = tw.endMin === null;     // 以降: tail extends into later times
+          // Tangential arrowhead at the OPEN end of a one-sided window so
+          // the direction of the allowed region is explicit.
           const renderArrow = (atTimeMin: number, direction: 'forward' | 'backward') => {
             const angle = minutesToAngle(atTimeMin);
             const sign = direction === 'forward' ? 1 : -1;
-            const tip = polar(angle + sign * 5, winRadius);
-            const baseInner = polar(angle + sign * 1.5, winRadius - 2.5);
-            const baseOuter = polar(angle + sign * 1.5, winRadius + 2.5);
+            const tip = polar(angle + sign * 7, winRadius);
+            const baseInner = polar(angle + sign * 2, winRadius - 4);
+            const baseOuter = polar(angle + sign * 2, winRadius + 4);
             return (
               <polygon
                 points={`${tip.x},${tip.y} ${baseInner.x},${baseInner.y} ${baseOuter.x},${baseOuter.y}`}
@@ -466,46 +434,22 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
               />
             );
           };
-          // Visit-number badge ties the marker to its case (matches the "n."
-          // in the outer label). Anchored at the closed boundary when there is
-          // one, otherwise the arc midpoint.
-          const anchorMin = !isOpenStart
-            ? arcStart
-            : !isOpenEnd
-              ? arcEnd
-              : (arcStart + arcEnd) / 2;
-          const badgeP = polar(minutesToAngle(anchorMin), winRadius + 7);
           return (
-            <g key={`tw-${i}`}>
-              {/* The arc/ticks stay deliberately low-contrast (supporting
-                  context), while the number badge keeps enough contrast to be
-                  readable as the link to the case. */}
-              <g opacity={0.5}>
-                <path
-                  d={d}
-                  stroke={color}
-                  strokeWidth={1.5}
-                  strokeLinecap="butt"
-                  strokeDasharray={isOpenStart || isOpenEnd ? '2 3' : '3 2.5'}
-                  fill="none"
-                />
-                {!isOpenStart && renderTick(arcStart)}
-                {!isOpenEnd && renderTick(arcEnd)}
-                {isOpenStart && renderArrow(arcStart, 'backward')}
-                {isOpenEnd && renderArrow(arcEnd, 'forward')}
-              </g>
-              <text
-                x={badgeP.x}
-                y={badgeP.y}
-                textAnchor="middle"
-                dominantBaseline="central"
-                fontSize={7.5}
-                fontWeight={700}
-                fill={color}
-                style={{ paintOrder: 'stroke', stroke: '#0b1220', strokeWidth: 2.5 }}
-              >
-                {w.visitIndex}
-              </text>
+            <g key={`tw-${i}`} opacity={0.85}>
+              <path
+                d={d}
+                stroke={color}
+                strokeWidth={3}
+                strokeLinecap={isOpenStart || isOpenEnd ? 'butt' : 'round'}
+                strokeDasharray={isOpenStart || isOpenEnd ? '4 3' : undefined}
+                fill="none"
+              />
+              {tw.startMin !== null && renderTick(tw.startMin)}
+              {tw.endMin !== null && renderTick(tw.endMin)}
+              {/* 以前: arrow at the open (earlier) end pointing further backward. */}
+              {isOpenStart && renderArrow(arcStart, 'backward')}
+              {/* 以降: arrow at the open (later) end pointing further forward. */}
+              {isOpenEnd && renderArrow(arcEnd, 'forward')}
             </g>
           );
         })}
