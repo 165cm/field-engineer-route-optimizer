@@ -165,7 +165,7 @@ const HOUR_LABELS = Array.from({ length: 12 }, (_, i) => ({
 // out so neighbouring labels that would otherwise overlap stay readable.
 const LABEL_R0 = RADIUS + STROKE / 2 + 16;
 const LABEL_R1 = RADIUS + STROKE / 2 + 32;
-const WINDOW_R = RADIUS + STROKE / 2 + 7;
+const WINDOW_R = RADIUS + STROKE / 2 + 3;
 
 type PlacedLabel = { seg: Segment; angle: number; tier: 0 | 1 };
 
@@ -401,10 +401,12 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             return null;
           }
           const d = arcPath(arcStart, arcEnd, winRadius);
+          // Boundary ticks bridge inward to the ring edge so the marker reads
+          // as an annotation on the time axis rather than a free-floating arc.
           const renderTick = (timeMin: number) => {
             const angle = minutesToAngle(timeMin);
-            const inner = polar(angle, winRadius - 5);
-            const outer = polar(angle, winRadius + 5);
+            const inner = polar(angle, winRadius - 4);
+            const outer = polar(angle, winRadius + 2);
             return (
               <line
                 x1={inner.x}
@@ -412,21 +414,21 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
                 x2={outer.x}
                 y2={outer.y}
                 stroke={color}
-                strokeWidth={2.5}
+                strokeWidth={1.25}
                 strokeLinecap="round"
               />
             );
           };
           const isOpenStart = tw.startMin === null; // 以前: tail fades into earlier times
           const isOpenEnd = tw.endMin === null;     // 以降: tail extends into later times
-          // Tangential arrowhead at the OPEN end of a one-sided window so
-          // the direction of the allowed region is explicit.
+          // Small tangential arrowhead at the OPEN end of a one-sided window so
+          // the direction of the allowed region stays legible while subtle.
           const renderArrow = (atTimeMin: number, direction: 'forward' | 'backward') => {
             const angle = minutesToAngle(atTimeMin);
             const sign = direction === 'forward' ? 1 : -1;
-            const tip = polar(angle + sign * 7, winRadius);
-            const baseInner = polar(angle + sign * 2, winRadius - 4);
-            const baseOuter = polar(angle + sign * 2, winRadius + 4);
+            const tip = polar(angle + sign * 5, winRadius);
+            const baseInner = polar(angle + sign * 1.5, winRadius - 2.5);
+            const baseOuter = polar(angle + sign * 1.5, winRadius + 2.5);
             return (
               <polygon
                 points={`${tip.x},${tip.y} ${baseInner.x},${baseInner.y} ${baseOuter.x},${baseOuter.y}`}
@@ -435,13 +437,15 @@ export function ScheduleClock({ plan, tasks }: { plan: RoutePlan; tasks?: TaskTy
             );
           };
           return (
-            <g key={`tw-${i}`} opacity={0.85}>
+            // Deliberately low-contrast: the time window is supporting context,
+            // so it must stay quieter than the work/travel arcs.
+            <g key={`tw-${i}`} opacity={0.5}>
               <path
                 d={d}
                 stroke={color}
-                strokeWidth={3}
-                strokeLinecap={isOpenStart || isOpenEnd ? 'butt' : 'round'}
-                strokeDasharray={isOpenStart || isOpenEnd ? '4 3' : undefined}
+                strokeWidth={1.5}
+                strokeLinecap="butt"
+                strokeDasharray={isOpenStart || isOpenEnd ? '2 3' : '3 2.5'}
                 fill="none"
               />
               {tw.startMin !== null && renderTick(tw.startMin)}
