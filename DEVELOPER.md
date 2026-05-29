@@ -1,7 +1,8 @@
-# Developer Guide / 開発者向けドキュメント
+# ルート最適化アプリ — Developer Guide
+
+> ユーザー向け説明は [README.md](./README.md) を参照。
 
 このドキュメントは、開発・保守・デプロイ時の注意事項をまとめたものです。
-一般利用者向けの説明は [README.md](./README.md) に分離しています。
 
 ## アプリの役割
 
@@ -20,14 +21,14 @@
 
 ## 技術スタック
 
-- **フロントエンド:** React, TypeScript, Vite
-- **スタイル:** Tailwind CSS
-- **アイコン:** lucide-react
-- **地図:** Google Maps JavaScript API
-- **移動時間:** Distance Matrix API
-- **住所変換:** Geocoding API
-- **道路沿いルート描画:** Directions API
-- **AI読み取り:** Gemini API
+| レイヤ | 採用技術 |
+|---|---|
+| 言語 / フレームワーク | TypeScript / React / Vite |
+| スタイル | Tailwind CSS |
+| 地図 / ルート | Google Maps JavaScript API, Distance Matrix API, Geocoding API, Directions API |
+| AI読み取り | Gemini API |
+| デプロイ | GitHub Pages (GitHub Actions) |
+| バックエンド | Node.js + Express (APIプロキシ) |
 
 ## 主要ファイル
 
