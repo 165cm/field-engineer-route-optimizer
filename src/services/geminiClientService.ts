@@ -13,6 +13,7 @@ const MODEL = 'gemini-2.5-flash';
 
 type ParsedVisit = {
   address: string;
+  phoneNumber?: string | null;
   startTime?: string | null;
   endTime?: string | null;
   difficulty?: number;
@@ -26,6 +27,7 @@ const RESPONSE_SCHEMA = {
     type: 'OBJECT',
     properties: {
       address: { type: 'STRING' },
+      phoneNumber: { type: 'STRING', nullable: true },
       startTime: { type: 'STRING', nullable: true },
       endTime: { type: 'STRING', nullable: true },
       difficulty: { type: 'INTEGER' },
@@ -53,14 +55,15 @@ ${text}
 ]`;
 
 const IMAGE_PROMPT = `この画像（修理伝票やリストのスクリーンショット）から、家電修理の訪問先情報を抽出してJSON形式で返してください。
-ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを可能な限り読み取ってください。
-個人名（顧客名）や作業メモ・用件は抽出しないでください。
+ルートと時間管理や訪問前連絡に必要な住所、電話番号（あれば）、時間指定（あれば）、難易度だけを可能な限り読み取ってください。
+個人名（顧客名）や作業メモ・用件は抽出しないでください。電話番号はハイフン等の表記を画像のまま保ち、不明ならnullにしてください。
 最大5件まで。
 
 出力は以下の配列形式にしてください。
 [
   {
     "address": "住所",
+    "phoneNumber": "電話番号 (例: 090-1234-5678, 不明ならnull)",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。内容から推測して。デフォルト2)"

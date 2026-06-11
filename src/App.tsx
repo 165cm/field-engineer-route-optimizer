@@ -31,7 +31,9 @@ import {
   Utensils,
   Layers,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Phone,
+  Copy
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -402,6 +404,7 @@ function MainApp() {
     return parsed.map((v: any) => ({
       id: v.id,
       address: v.address || '',
+      phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
       taskId: v.taskId,
       timeWindow: v.timeWindow,
       workMinutes: Number(v.workMinutes) || 60,
@@ -726,6 +729,7 @@ function MainApp() {
     return data.map((v: any) => ({
       id: Math.random().toString(36).substr(2, 9),
       address: typeof v.address === 'string' ? v.address : '',
+      phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
       workMinutes: 60,
       difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
       timeWindow: v.startTime || v.endTime ? { start: v.startTime || '', end: v.endTime || '' } : undefined,
@@ -1883,6 +1887,7 @@ function ParsedVisitsReviewModal({
   onConfirm: (visits: Visit[]) => void;
   onClose: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const updateVisit = (id: string, updates: Partial<Visit>) => {
     onChange(visits.map(v => {
       if (v.id !== id) return v;
@@ -1895,6 +1900,45 @@ function ParsedVisitsReviewModal({
   };
   const removeVisit = (id: string) => onChange(visits.filter(v => v.id !== id));
   const validCount = visits.filter(v => v.address.trim()).length;
+  const formatTimeWindow = (visit: Visit) => {
+    const start = visit.timeWindow?.start || '';
+    const end = visit.timeWindow?.end || '';
+    if (start && end) return `${start}-${end}`;
+    if (start) return `${start}以降`;
+    if (end) return `${end}まで`;
+    return '';
+  };
+  const copyText = visits
+    .filter(v => v.address.trim() || v.phoneNumber?.trim())
+    .map((visit, idx) => {
+      const rows = [
+        `${idx + 1}. 訪問先`,
+        `住所: ${visit.address.trim() || '-'}`,
+      ];
+      if (visit.phoneNumber?.trim()) rows.push(`電話番号: ${visit.phoneNumber.trim()}`);
+      const time = formatTimeWindow(visit);
+      if (time) rows.push(`訪問時間: ${time}`);
+      rows.push(`難易度: ${visit.difficulty}`);
+      return rows.join('\n');
+    })
+    .join('\n\n');
+  const handleCopy = async () => {
+    if (!copyText) return;
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(copyText);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = copyText;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
 
   return (
     <motion.div
@@ -1916,7 +1960,7 @@ function ParsedVisitsReviewModal({
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <ClipboardList className="w-4 h-4 text-blue-400" /> 読み取り結果の確認
             </h2>
-            <p className="text-[11px] text-secondary mt-1">住所・時間・難易度だけを確認して追加します。</p>
+            <p className="text-[11px] text-secondary mt-1">住所・電話番号・時間・難易度を確認して追加します。</p>
           </div>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
@@ -1964,6 +2008,18 @@ function ParsedVisitsReviewModal({
                   </p>
                 )}
 
+                <label className="mt-3 block">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                    <Phone className="w-3.5 h-3.5" /> 電話番号
+                  </span>
+                  <input
+                    className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs outline-none transition-colors focus:border-blue-500/50"
+                    placeholder="電話番号を確認・修正"
+                    value={visit.phoneNumber || ''}
+                    onChange={(e) => updateVisit(visit.id, { phoneNumber: e.target.value })}
+                  />
+                </label>
+
                 <div className="mt-3 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
                   <div className="bg-slate-800/50 p-2.5 rounded border border-ui">
                     <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
@@ -1982,6 +2038,14 @@ function ParsedVisitsReviewModal({
         </div>
 
         <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
+          <button
+            onClick={handleCopy}
+            disabled={!copyText}
+            className="px-3 py-3 rounded-xl border border-ui bg-slate-800/50 text-secondary hover:text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title="読み取り内容をコピー"
+          >
+            {copied ? <CheckCircle2 className="w-4 h-4 text-green-300" /> : <Copy className="w-4 h-4" />}
+          </button>
           <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">
             キャンセル
           </button>

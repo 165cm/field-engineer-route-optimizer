@@ -8,6 +8,7 @@ export type TimeWindow = {
 export type Visit = {
   id: string;
   address: string;
+  phoneNumber?: string;
   taskId?: string;
   timeWindow?: TimeWindow;
   workMinutes: number; // default 60
