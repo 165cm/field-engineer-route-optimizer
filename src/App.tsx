@@ -79,6 +79,67 @@ const Badge = ({ children, variant = 'default', className }: any) => {
   );
 };
 
+async function copyTextToClipboard(value: string): Promise<boolean> {
+  const text = value.trim();
+  if (!text) return false;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+  } else {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  }
+  return true;
+}
+
+function CopyActionButton({
+  value,
+  label,
+  className,
+  iconClassName,
+}: {
+  value?: string | null;
+  label: string;
+  className?: string;
+  iconClassName?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const enabled = Boolean(value?.trim());
+
+  const handleCopy = async () => {
+    if (!enabled || !value) return;
+    const ok = await copyTextToClipboard(value);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      disabled={!enabled}
+      className={cn(
+        "p-1.5 rounded-md border border-ui bg-slate-900/90 text-secondary hover:text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors",
+        className
+      )}
+      title={copied ? `${label}しました` : label}
+      aria-label={label}
+    >
+      {copied ? (
+        <CheckCircle2 className={cn("w-3.5 h-3.5 text-green-300", iconClassName)} />
+      ) : (
+        <Copy className={cn("w-3.5 h-3.5", iconClassName)} />
+      )}
+    </button>
+  );
+}
+
 const TIME_OPTIONS = Array.from({ length: 25 }).map((_, i) => {
   const h = Math.floor(i / 2) + 9; // 9:00 to 21:00
   const m = i % 2 === 0 ? '00' : '30';
@@ -1103,13 +1164,20 @@ function MainApp() {
                     </div>
                   </div>
                   
-                  <textarea 
-                    className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 text-xs mb-3 resize-none focus:border-blue-500/50 transition-colors"
-                    placeholder="住所を入力..."
-                    rows={2}
-                    value={visit.address}
-                    onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
-                  />
+                  <div className="relative mb-3">
+                    <textarea
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 pr-11 text-xs resize-none focus:border-blue-500/50 transition-colors"
+                      placeholder="住所を入力..."
+                      rows={2}
+                      value={visit.address}
+                      onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
+                    />
+                    <CopyActionButton
+                      value={visit.address}
+                      label="住所をコピー"
+                      className="absolute right-2 top-2"
+                    />
+                  </div>
                   {(validation.errors.length > 0 || validation.warnings.length > 0) && (
                     <div className="mb-3 space-y-1">
                       {validation.errors.map(message => (
@@ -1128,6 +1196,25 @@ function MainApp() {
                   )}
 
                   <div className="flex flex-col gap-3 mt-3">
+                     <label className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
+                        <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                          <Phone className="w-3.5 h-3.5" /> 電話番号
+                        </span>
+                        <div className="relative">
+                          <input
+                            className="w-full bg-slate-900 border border-ui text-white rounded-md px-3 py-2 pr-11 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
+                            placeholder="電話番号を入力..."
+                            value={visit.phoneNumber || ''}
+                            onChange={(e) => handleUpdateVisit(visit.id, { phoneNumber: e.target.value })}
+                          />
+                          <CopyActionButton
+                            value={visit.phoneNumber}
+                            label="電話番号をコピー"
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2"
+                          />
+                        </div>
+                     </label>
+
                      <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
                         <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
                           <Clock className="w-3.5 h-3.5" /> 訪問時間
@@ -1443,6 +1530,7 @@ function MainApp() {
                     ? activePlan.order.findIndex(v => v.id === visit.id) + 1
                     : idx + 1;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
+                  const phoneNumber = visit?.phoneNumber?.trim() || '';
                   return (
                   <div key={idx} className="relative">
                     {leg.visitId && visit ? (
@@ -1497,6 +1585,30 @@ function MainApp() {
                                 </button>
                               </>
                             )}
+                            <CopyActionButton
+                              value={visit.address}
+                              label="住所をコピー"
+                              className="border-0 bg-transparent hover:bg-slate-800"
+                              iconClassName="w-4 h-4"
+                            />
+                            {phoneNumber && (
+                              <>
+                                <CopyActionButton
+                                  value={phoneNumber}
+                                  label="電話番号をコピー"
+                                  className="border-0 bg-transparent hover:bg-slate-800"
+                                  iconClassName="w-4 h-4"
+                                />
+                                <a
+                                  href={`tel:${phoneNumber.replace(/[^\d+]/g, '')}`}
+                                  title="電話をかける"
+                                  aria-label="電話をかける"
+                                  className="p-1.5 hover:bg-green-500/10 rounded transition-colors"
+                                >
+                                  <Phone className="w-4 h-4 text-green-400" />
+                                </a>
+                              </>
+                            )}
                             <button
                               onClick={() => toggleCompleted(visit.id)}
                               title={isCompleted ? '完了を取り消す' : '完了にする'}
@@ -1531,9 +1643,17 @@ function MainApp() {
                             return '訪問先';
                           })()}
                         </h3>
-                        <p className={cn("text-[10px] mb-3 truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
-                          {visit.address}
-                        </p>
+                        <div className="mb-3 space-y-1">
+                          <p className={cn("text-[10px] truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
+                            {visit.address}
+                          </p>
+                          {phoneNumber && (
+                            <p className={cn("text-[10px] flex items-center gap-1.5 num-font", isCompleted ? "text-secondary line-through" : "text-green-300")}>
+                              <Phone className="w-3 h-3 shrink-0" />
+                              {phoneNumber}
+                            </p>
+                          )}
+                        </div>
 
                         <div className="grid grid-cols-2 gap-2 text-[11px]">
                           <div className="bg-slate-800/50 p-2 rounded border border-ui">
@@ -1887,7 +2007,6 @@ function ParsedVisitsReviewModal({
   onConfirm: (visits: Visit[]) => void;
   onClose: () => void;
 }) {
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const updateVisit = (id: string, updates: Partial<Visit>) => {
     onChange(visits.map(v => {
       if (v.id !== id) return v;
@@ -1900,24 +2019,6 @@ function ParsedVisitsReviewModal({
   };
   const removeVisit = (id: string) => onChange(visits.filter(v => v.id !== id));
   const validCount = visits.filter(v => v.address.trim()).length;
-  const copyValue = async (value: string, key: string) => {
-    const text = value.trim();
-    if (!text) return;
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      document.body.removeChild(textarea);
-    }
-    setCopiedKey(key);
-    window.setTimeout(() => setCopiedKey(null), 1600);
-  };
 
   return (
     <motion.div
@@ -1981,14 +2082,11 @@ function ParsedVisitsReviewModal({
                     value={visit.address}
                     onChange={(e) => updateVisit(visit.id, { address: e.target.value })}
                   />
-                  <button
-                    onClick={() => copyValue(visit.address, `${visit.id}:address`)}
-                    disabled={!visit.address.trim()}
-                    className="absolute right-2 top-2 p-1.5 rounded-md border border-ui bg-slate-900/90 text-secondary hover:text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                    title="住所をコピー"
-                  >
-                    {copiedKey === `${visit.id}:address` ? <CheckCircle2 className="w-3.5 h-3.5 text-green-300" /> : <Copy className="w-3.5 h-3.5" />}
-                  </button>
+                  <CopyActionButton
+                    value={visit.address}
+                    label="住所をコピー"
+                    className="absolute right-2 top-2"
+                  />
                 </div>
                 {missingAddress && (
                   <p className="flex items-center gap-1.5 text-[10px] font-bold text-red-300 mt-1.5">
@@ -2008,14 +2106,11 @@ function ParsedVisitsReviewModal({
                       value={visit.phoneNumber || ''}
                       onChange={(e) => updateVisit(visit.id, { phoneNumber: e.target.value })}
                     />
-                    <button
-                      onClick={() => copyValue(visit.phoneNumber || '', `${visit.id}:phone`)}
-                      disabled={!visit.phoneNumber?.trim()}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md border border-ui bg-slate-900/90 text-secondary hover:text-white hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      title="電話番号をコピー"
-                    >
-                      {copiedKey === `${visit.id}:phone` ? <CheckCircle2 className="w-3.5 h-3.5 text-green-300" /> : <Copy className="w-3.5 h-3.5" />}
-                    </button>
+                    <CopyActionButton
+                      value={visit.phoneNumber}
+                      label="電話番号をコピー"
+                      className="absolute right-2 top-1/2 -translate-y-1/2"
+                    />
                   </div>
                 </label>
 
