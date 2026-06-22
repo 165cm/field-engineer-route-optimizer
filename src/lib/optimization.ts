@@ -246,8 +246,10 @@ export function optimizeRoutes(
     let difficultyOrderPenalty = 0;
     let easyBeforeNoonBonus = 0;
     plan.order.forEach((v, i) => {
-      const rank = i + 1;
-      difficultyOrderPenalty += v.difficulty * rank * 5;
+      const remainingRank = visitCount - i;
+      // "確実": clear easier jobs first, leaving the latter half of the day
+      // open for harder sites that may need more careful handling.
+      difficultyOrderPenalty += v.difficulty * remainingRank * 5;
       const leg = legByVisitId.get(v.id);
       if (!leg) return;
       const endTime = parseTime(leg.endTime);
