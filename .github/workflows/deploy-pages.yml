@@ -45,6 +45,10 @@ jobs:
         env:
           VITE_DEMO_MODE: 'true'
           VITE_BASE: '/${{ github.event.repository.name }}/'
+          # Soft gate for demo AI usage. This is injected at build time, so it
+          # is not stored in the repository, but it is still visible in the
+          # deployed static JavaScript bundle.
+          VITE_DEMO_AI_PASSWORD: ${{ secrets.VITE_DEMO_AI_PASSWORD }}
           # Maps key is exposed in the client bundle. Restrict it in GCP:
           #   - HTTP-referrer: https://<owner>.github.io/<repo>/*
           #   - APIs: Maps JS + Geocoding + Places + Routes

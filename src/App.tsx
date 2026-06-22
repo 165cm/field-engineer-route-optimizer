@@ -2301,7 +2301,8 @@ function AIUnlockModal({ onUnlock, onClose }: { onUnlock: () => void; onClose: (
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
   const submit = () => {
-    if (tryUnlockAI(pw)) {
+    const typedPassword = (inputRef.current?.value || pw).trim();
+    if (tryUnlockAI(typedPassword)) {
       onUnlock();
     } else {
       setError('パスワードが違います');
@@ -2353,8 +2354,7 @@ function AIUnlockModal({ onUnlock, onClose }: { onUnlock: () => void; onClose: (
           </button>
           <button
             onClick={submit}
-            disabled={!pw}
-            className="flex-[1.4] py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-900 disabled:opacity-40"
+            className="flex-[1.4] py-3 rounded-lg text-xs font-bold uppercase tracking-wider bg-amber-500 hover:bg-amber-400 text-slate-900"
           >
             解除
           </button>
