@@ -435,6 +435,29 @@ function buildGoogleMapsDirectionsUrl({
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+function formatVisitAddress(address: string): {
+  streetLine: string;
+  buildingLine: string;
+  copyStreetAddress: string;
+} {
+  const normalized = address
+    .replace(/〒?\d{3}-?\d{4}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const withoutTokyo = normalized.replace(/^東京都\s*/, '').trim();
+
+  // Split after the first street-number style token. The OCR usually inserts
+  // a space before building names; this keeps detached houses as one line.
+  const match = withoutTokyo.match(/^(.+?[0-9０-９]+(?:[-－ー丁目番地号\s]+[0-9０-９]+){1,3})(?:\s+(.+))?$/);
+  const streetLine = (match?.[1] || withoutTokyo).trim();
+  const buildingLine = (match?.[2] || '').trim();
+  const copyStreetAddress = normalized.startsWith('東京都')
+    ? `東京都${streetLine}`
+    : streetLine;
+
+  return { streetLine, buildingLine, copyStreetAddress };
+}
+
 function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates: Partial<Visit>) => void }) {
   const { timeWindow } = visit;
   const hasStart = !!timeWindow?.start;
@@ -1681,6 +1704,7 @@ function MainApp() {
                     : idx + 1;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
                   const phoneNumber = visit?.phoneNumber?.trim() || '';
+                  const addressParts = visit ? formatVisitAddress(visit.address) : null;
                   return (
                   <div key={idx} className="relative">
                     {leg.visitId && visit ? (
@@ -1766,10 +1790,13 @@ function MainApp() {
 
                         <div className="space-y-2.5">
                           <div className="flex items-start gap-2 rounded-lg bg-slate-900/45 border border-ui px-2.5 py-2">
-                            <p className={cn("flex-1 min-w-0 text-sm leading-relaxed break-words", isCompleted ? "text-secondary line-through" : "text-gray-100")}>
-                              {visit.address}
-                            </p>
-                            <div className="flex gap-1 shrink-0">
+                            <div className={cn("flex-1 min-w-0 leading-relaxed break-words", isCompleted ? "text-secondary line-through" : "text-gray-100")}>
+                              <p className="text-sm font-semibold">{addressParts?.streetLine || visit.address}</p>
+                              {addressParts?.buildingLine && (
+                                <p className="text-xs text-slate-300 mt-0.5">{addressParts.buildingLine}</p>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap justify-end gap-1 shrink-0 max-w-[9.5rem]">
                               <button
                                 onClick={() => {
                                   const destination = formatMapsPoint(visit.address, visit.coords);
@@ -1787,12 +1814,21 @@ function MainApp() {
                                 地図
                               </button>
                               <CopyActionButton
-                                value={visit.address}
-                                label="住所をコピー"
-                                buttonText="コピー"
+                                value={addressParts?.copyStreetAddress || visit.address}
+                                label="東京都から番地までをコピー"
+                                buttonText="住所"
                                 className="h-9 px-2 justify-center gap-1 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-[11px] font-bold flex items-center"
                                 iconClassName="w-3.5 h-3.5"
                               />
+                              {addressParts?.buildingLine && (
+                                <CopyActionButton
+                                  value={addressParts.buildingLine}
+                                  label="建物名・部屋番号をコピー"
+                                  buttonText="建物"
+                                  className="h-9 px-2 justify-center gap-1 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-[11px] font-bold flex items-center"
+                                  iconClassName="w-3.5 h-3.5"
+                                />
+                              )}
                             </div>
                           </div>
 
