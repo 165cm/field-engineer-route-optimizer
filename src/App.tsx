@@ -438,6 +438,7 @@ function buildGoogleMapsDirectionsUrl({
 function formatVisitAddress(address: string): {
   streetLine: string;
   buildingLine: string;
+  buildingMapQuery: string;
   copyStreetAddress: string;
 } {
   const normalized = address
@@ -451,11 +452,15 @@ function formatVisitAddress(address: string): {
   const match = withoutTokyo.match(/^(.+?[0-9０-９]+(?:[-－ー丁目番地号\s]+[0-9０-９]+){1,3})(?:\s+(.+))?$/);
   const streetLine = (match?.[1] || withoutTokyo).trim();
   const buildingLine = (match?.[2] || '').trim();
+  const buildingMapQuery = buildingLine
+    .replace(/\s*(?:[0-9０-９]{1,4}\s*)?(?:号室|号|室)\s*$/u, '')
+    .replace(/\s+[0-9０-９]{2,4}\s*$/u, '')
+    .trim();
   const copyStreetAddress = normalized.startsWith('東京都')
     ? `東京都${streetLine}`
     : streetLine;
 
-  return { streetLine, buildingLine, copyStreetAddress };
+  return { streetLine, buildingLine, buildingMapQuery, copyStreetAddress };
 }
 
 function TimeWindowInput({ visit, onChange }: { visit: Visit, onChange: (updates: Partial<Visit>) => void }) {
@@ -1821,13 +1826,33 @@ function MainApp() {
                                 iconClassName="w-3.5 h-3.5"
                               />
                               {addressParts?.buildingLine && (
-                                <CopyActionButton
-                                  value={addressParts.buildingLine}
-                                  label="建物名・部屋番号をコピー"
-                                  buttonText="建物"
-                                  className="h-9 px-2 justify-center gap-1 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-[11px] font-bold flex items-center"
-                                  iconClassName="w-3.5 h-3.5"
-                                />
+                                <>
+                                  {addressParts.buildingMapQuery && (
+                                    <button
+                                      onClick={() => {
+                                        const destination = `${addressParts.copyStreetAddress} ${addressParts.buildingMapQuery}`.trim();
+                                        window.open(
+                                          buildGoogleMapsDirectionsUrl({ destination }),
+                                          '_blank',
+                                          'noopener,noreferrer'
+                                        );
+                                      }}
+                                      title="部屋番号を除いた建物名で地図を開く"
+                                      aria-label="部屋番号を除いた建物名で地図を開く"
+                                      className="h-9 px-2 rounded-md border border-blue-500/30 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
+                                    >
+                                      <Navigation className="w-3.5 h-3.5" />
+                                      建物地図
+                                    </button>
+                                  )}
+                                  <CopyActionButton
+                                    value={addressParts.buildingLine}
+                                    label="建物名・部屋番号をコピー"
+                                    buttonText="建物"
+                                    className="h-9 px-2 justify-center gap-1 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-[11px] font-bold flex items-center"
+                                    iconClassName="w-3.5 h-3.5"
+                                  />
+                                </>
                               )}
                             </div>
                           </div>
