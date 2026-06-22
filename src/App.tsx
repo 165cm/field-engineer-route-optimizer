@@ -1701,20 +1701,20 @@ function MainApp() {
                           style={{ background: difficultyColor(visit.difficulty).work }}
                         />
 
-                        <div className="flex items-start justify-between gap-3 mb-4">
-                          <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-start justify-between gap-2 mb-3">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
                             <button
                               onClick={() => toggleCompleted(visit.id)}
                               title={isCompleted ? '完了を取り消す' : '完了にする'}
+                              aria-label={isCompleted ? '完了を取り消す' : '訪問を完了にする'}
                               className={cn(
-                                "shrink-0 h-10 px-3 rounded-lg border text-xs font-bold flex items-center gap-1.5 transition-colors",
+                                "shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center transition-colors",
                                 isCompleted
                                   ? "bg-green-500/25 border-green-400/50 text-green-100"
-                                  : "bg-slate-800 border-green-500/40 text-green-300 hover:bg-green-500/15"
+                                  : "bg-slate-800 border-slate-600 text-slate-400 hover:border-green-500/50 hover:text-green-300 hover:bg-green-500/10"
                               )}
                             >
                               <CheckCircle2 className="w-4 h-4" />
-                              {isCompleted ? '完了済み' : '完了'}
                             </button>
                             <div
                               className="shrink-0 px-2 py-1 rounded text-[10px] font-bold num-font text-white"
@@ -1726,6 +1726,11 @@ function MainApp() {
                               "status-dot w-2.5 h-2.5 rounded-full shrink-0",
                               leg.status === 'ok' ? "bg-green-400 shadow-[0_0_8px_#4ade80]" : leg.status === 'warning' ? "bg-yellow-400 shadow-[0_0_8px_#fbbf24]" : "bg-red-400 shadow-[0_0_8px_#f87171]"
                             )} />
+                            {isCompleted && (
+                              <span className="shrink-0 text-[10px] font-bold text-green-300 bg-green-500/10 border border-green-500/30 rounded px-1.5 py-0.5">
+                                完了済み
+                              </span>
+                            )}
                           </div>
                           <div className="flex gap-1 shrink-0">
                             {activePlan.id === 'X' && (
@@ -1751,7 +1756,7 @@ function MainApp() {
                           </div>
                         </div>
 
-                        <h3 className={cn("text-xl font-bold mb-3 leading-tight", isCompleted && "line-through text-secondary")}>
+                        <h3 className={cn("text-lg font-bold mb-2 leading-tight", isCompleted && "line-through text-secondary")}>
                           {(() => {
                             const task = settings.tasks.find(t => t.id === visit.taskId);
                             if (task) return task.name;
@@ -1759,12 +1764,12 @@ function MainApp() {
                           })()}
                         </h3>
 
-                        <div className="space-y-4">
-                          <div className="space-y-2">
-                            <p className={cn("text-sm leading-relaxed break-words", isCompleted ? "text-secondary line-through" : "text-gray-200")}>
+                        <div className="space-y-2.5">
+                          <div className="flex items-start gap-2 rounded-lg bg-slate-900/45 border border-ui px-2.5 py-2">
+                            <p className={cn("flex-1 min-w-0 text-sm leading-relaxed break-words", isCompleted ? "text-secondary line-through" : "text-gray-100")}>
                               {visit.address}
                             </p>
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="flex gap-1 shrink-0">
                               <button
                                 onClick={() => {
                                   const destination = formatMapsPoint(visit.address, visit.coords);
@@ -1774,44 +1779,45 @@ function MainApp() {
                                     'noopener,noreferrer'
                                   );
                                 }}
-                                title="地図を起動"
-                                className="h-10 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                                title="この住所を地図で開く"
+                                aria-label="この住所を地図で開く"
+                                className="h-9 px-2 rounded-md border border-blue-500/30 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
                               >
-                                <Navigation className="w-4 h-4" />
-                                地図起動
+                                <Navigation className="w-3.5 h-3.5" />
+                                地図
                               </button>
                               <CopyActionButton
                                 value={visit.address}
                                 label="住所をコピー"
-                                buttonText="住所コピー"
-                                className="h-10 justify-center gap-1.5 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-xs font-bold flex items-center"
-                                iconClassName="w-4 h-4"
+                                buttonText="コピー"
+                                className="h-9 px-2 justify-center gap-1 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-[11px] font-bold flex items-center"
+                                iconClassName="w-3.5 h-3.5"
                               />
                             </div>
                           </div>
 
                           {phoneNumber && (
-                            <div className="space-y-2">
-                              <p className={cn("text-lg flex items-center gap-2 num-font font-bold", isCompleted ? "text-secondary line-through" : "text-green-300")}>
-                                <Phone className="w-4 h-4 shrink-0" />
+                            <div className="flex items-center gap-2 rounded-lg bg-slate-900/45 border border-ui px-2.5 py-2">
+                              <p className={cn("flex-1 min-w-0 text-base flex items-center gap-2 num-font font-bold", isCompleted ? "text-secondary line-through" : "text-green-300")}>
+                                <Phone className="w-3.5 h-3.5 shrink-0" />
                                 {phoneNumber}
                               </p>
-                              <div className="grid grid-cols-2 gap-2">
+                              <div className="flex gap-1 shrink-0">
                                 <a
                                   href={`tel:${phoneNumber.replace(/[^\d+]/g, '')}`}
-                                  title="電話を起動"
-                                  aria-label="電話を起動"
-                                  className="h-10 rounded-lg border border-green-500/30 bg-green-500/10 text-green-200 hover:bg-green-500/20 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                                  title="電話をかける"
+                                  aria-label="電話をかける"
+                                  className="h-9 px-2 rounded-md border border-green-500/30 bg-green-500/10 text-green-200 hover:bg-green-500/20 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
                                 >
-                                  <Phone className="w-4 h-4" />
-                                  電話起動
+                                  <Phone className="w-3.5 h-3.5" />
+                                  電話
                                 </a>
                                 <CopyActionButton
                                   value={phoneNumber}
                                   label="電話番号をコピー"
-                                  buttonText="電話番号コピー"
-                                  className="h-10 justify-center gap-1.5 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-xs font-bold flex items-center"
-                                  iconClassName="w-4 h-4"
+                                  buttonText="コピー"
+                                  className="h-9 px-2 justify-center gap-1 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-[11px] font-bold flex items-center"
+                                  iconClassName="w-3.5 h-3.5"
                                 />
                               </div>
                             </div>
