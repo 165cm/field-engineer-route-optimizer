@@ -208,6 +208,98 @@ function normalizeRoutePlan(plan: RoutePlan): RoutePlan {
   };
 }
 
+const PLAN_DISPLAY_ORDER: RoutePlan['id'][] = ['C', 'A', 'B', 'X'];
+const ROUTE_SESSION_STORAGE_KEY = 'repair_route_session_v1';
+
+type StoredRouteSession = {
+  plans: RoutePlan[];
+  baseline: Baseline | null;
+  customOrder: string[];
+  matrix: DistanceMatrixLike;
+  activePlanIdx: number;
+  visitSignature: string;
+  settingsSignature: string;
+};
+
+function orderRoutePlans(plans: RoutePlan[]): RoutePlan[] {
+  return plans
+    .map(normalizeRoutePlan)
+    .slice()
+    .sort((a, b) => PLAN_DISPLAY_ORDER.indexOf(a.id) - PLAN_DISPLAY_ORDER.indexOf(b.id));
+}
+
+function buildVisitSignature(visits: Visit[]): string {
+  return JSON.stringify(visits.map(v => ({
+    id: v.id,
+    address: v.address,
+    phoneNumber: v.phoneNumber || '',
+    taskId: v.taskId || '',
+    timeWindow: v.timeWindow || null,
+    workMinutes: v.workMinutes,
+    difficulty: v.difficulty,
+  })));
+}
+
+function buildRouteSettingsSignature(settings: Settings): string {
+  return JSON.stringify({
+    homeAddress: settings.homeAddress,
+    startTime: settings.startTime || '09:00',
+    endLocation: settings.endLocation,
+    customEndAddress: settings.customEndAddress || '',
+    lunchBreakMinutes: settings.lunchBreakMinutes || 0,
+  });
+}
+
+function readStoredRouteSession(visits: Visit[], settings: Settings): StoredRouteSession | null {
+  try {
+    const raw = localStorage.getItem(ROUTE_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredRouteSession;
+    if (!Array.isArray(parsed.plans) || parsed.plans.length === 0 || !parsed.matrix) return null;
+    if (parsed.visitSignature !== buildVisitSignature(visits)) return null;
+    if (parsed.settingsSignature !== buildRouteSettingsSignature(settings)) return null;
+    return {
+      ...parsed,
+      plans: orderRoutePlans(parsed.plans),
+      customOrder: Array.isArray(parsed.customOrder) ? parsed.customOrder : [],
+      activePlanIdx: Number.isInteger(parsed.activePlanIdx) ? parsed.activePlanIdx : 0,
+      baseline: parsed.baseline || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistRouteSession({
+  plans,
+  baseline,
+  customOrder,
+  matrix,
+  visits,
+  settings,
+  activePlanIdx,
+}: {
+  plans: RoutePlan[];
+  baseline: Baseline | null;
+  customOrder: string[];
+  matrix: DistanceMatrixLike;
+  visits: Visit[];
+  settings: Settings;
+  activePlanIdx: number;
+}) {
+  try {
+    localStorage.setItem(ROUTE_SESSION_STORAGE_KEY, JSON.stringify({
+      plans: orderRoutePlans(plans),
+      baseline,
+      customOrder,
+      matrix,
+      activePlanIdx,
+      visitSignature: buildVisitSignature(visits),
+      settingsSignature: buildRouteSettingsSignature(settings),
+    }));
+  } catch {}
+}
+
 function computePlanScores(plans: RoutePlan[]): PlanScore[] {
   const automaticPlans = plans
     .map((plan, idx) => ({ plan: normalizeRoutePlan(plan), idx }))
@@ -474,16 +566,21 @@ function MainApp() {
     }));
   });
 
-  const [plans, setPlans] = useState<RoutePlan[]>([]);
+  const restoredRouteSessionRef = useRef<StoredRouteSession | null>(readStoredRouteSession(visits, settings));
+  const [plans, setPlans] = useState<RoutePlan[]>(() => restoredRouteSessionRef.current?.plans || []);
   // Context needed to recompute the custom plan when the user reorders visits.
   const optContextRef = useRef<{
     visits: Visit[];
     settings: Settings;
     matrix: DistanceMatrixLike;
-  } | null>(null);
+  } | null>(restoredRouteSessionRef.current ? {
+    visits,
+    settings,
+    matrix: restoredRouteSessionRef.current.matrix,
+  } : null);
   // Visit IDs in the user-chosen order for the "カスタム" plan.
-  const [customOrder, setCustomOrder] = useState<string[]>([]);
-  const [baseline, setBaseline] = useState<Baseline | null>(null);
+  const [customOrder, setCustomOrder] = useState<string[]>(() => restoredRouteSessionRef.current?.customOrder || []);
+  const [baseline, setBaseline] = useState<Baseline | null>(() => restoredRouteSessionRef.current?.baseline || null);
   const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
   const toggleCompleted = (id: string) => {
     setCompletedVisitIds(prev => {
@@ -492,8 +589,12 @@ function MainApp() {
       return next;
     });
   };
-  const [activeTab, setActiveTab] = useState<'input' | 'result'>('input');
-  const [activePlanIdx, setActivePlanIdx] = useState(0);
+  const [activeTab, setActiveTab] = useState<'input' | 'result'>(() => restoredRouteSessionRef.current ? 'result' : 'input');
+  const [activePlanIdx, setActivePlanIdx] = useState(() => {
+    const restoredIdx = restoredRouteSessionRef.current?.activePlanIdx ?? 0;
+    const restoredPlans = restoredRouteSessionRef.current?.plans || [];
+    return Math.min(Math.max(restoredIdx, 0), Math.max(restoredPlans.length - 1, 0));
+  });
 
   // Matches Tailwind's lg: breakpoint. Used so we can mount the map either
   // inside the sidebar (mobile) OR as the main right-side panel (desktop)
@@ -520,7 +621,19 @@ function MainApp() {
       calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X'),
       ctx.settings.lunchBreakMinutes || 0
     );
-    setPlans(prev => prev.map((p, i) => (i === 3 ? next : p)));
+    setPlans(prev => {
+      const nextPlans = orderRoutePlans(prev.map(p => (p.id === 'X' ? next : p)));
+      persistRouteSession({
+        plans: nextPlans,
+        baseline,
+        customOrder: nextOrder,
+        matrix: ctx.matrix,
+        visits: ctx.visits,
+        settings: ctx.settings,
+        activePlanIdx,
+      });
+      return nextPlans;
+    });
   };
 
   const moveCustomVisit = (visitId: string, direction: -1 | 1) => {
@@ -605,11 +718,22 @@ function MainApp() {
       setSettings(updatedSettings);
       const points = [updatedSettings.homeCoords || updatedSettings.homeAddress, ...updatedVisits.map(v => v.coords || v.address)];
       const matrix = await getDistanceMatrix(points, points);
-      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix).map(plan =>
+      const optimizedPlans = orderRoutePlans(optimizeRoutes(updatedVisits, updatedSettings, matrix).map(plan =>
         insertLunchBreak(plan, updatedSettings.lunchBreakMinutes || 0)
-      ).map(normalizeRoutePlan);
-      setBaseline(computeInputOrderBaseline(updatedVisits, updatedSettings, matrix));
+      ));
+      const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
+      setBaseline(baselineResult);
       setPlans(optimizedPlans);
+      optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
+      persistRouteSession({
+        plans: optimizedPlans,
+        baseline: baselineResult,
+        customOrder: [],
+        matrix,
+        visits: updatedVisits,
+        settings: updatedSettings,
+        activePlanIdx: 0,
+      });
       setActiveTab('result');
       setActivePlanIdx(0);
     } catch (error) {
@@ -947,9 +1071,9 @@ function MainApp() {
       const matrix = await getDistanceMatrix(points, points);
 
       // 3. Optimize + compute baseline (input order) for savings display
-      const optimizedPlans = optimizeRoutes(updatedVisits, updatedSettings, matrix)
+      const optimizedPlans = orderRoutePlans(optimizeRoutes(updatedVisits, updatedSettings, matrix)
         .map(plan => insertLunchBreak(plan, updatedSettings.lunchBreakMinutes || 0))
-        .map(normalizeRoutePlan);
+        .map(normalizeRoutePlan));
       // Seed the manual ("カスタム") plan with the best automatic order so the
       // user has a sensible starting point to nudge from.
       const customSeed = optimizedPlans[0]?.order.map(v => v.id) || [];
@@ -965,14 +1089,23 @@ function MainApp() {
         ),
         updatedSettings.lunchBreakMinutes || 0
       );
-      optimizedPlans.push(normalizeRoutePlan(customPlan));
+      const nextPlans = orderRoutePlans([...optimizedPlans, normalizeRoutePlan(customPlan)]);
       // Persist context for later re-computation when the user reorders.
       optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
       setCustomOrder(customSeed);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
 
-      setPlans(optimizedPlans.map(normalizeRoutePlan));
+      setPlans(nextPlans);
+      persistRouteSession({
+        plans: nextPlans,
+        baseline: baselineResult,
+        customOrder: customSeed,
+        matrix,
+        visits: updatedVisits,
+        settings: updatedSettings,
+        activePlanIdx: 0,
+      });
       setCompletedVisitIds(new Set());
       setActiveTab('result');
       setActivePlanIdx(0);
@@ -985,8 +1118,22 @@ function MainApp() {
     }
   };
 
-  const displayPlans = plans.map(normalizeRoutePlan);
-  const activePlan = displayPlans[activePlanIdx];
+  const displayPlans = orderRoutePlans(plans);
+  const activePlan = displayPlans[activePlanIdx] || displayPlans[0];
+  const selectPlan = (idx: number) => {
+    setActivePlanIdx(idx);
+    const ctx = optContextRef.current;
+    if (!ctx || displayPlans.length === 0) return;
+    persistRouteSession({
+      plans: displayPlans,
+      baseline,
+      customOrder,
+      matrix: ctx.matrix,
+      visits: ctx.visits,
+      settings: ctx.settings,
+      activePlanIdx: idx,
+    });
+  };
 
   return (
     <div className="bg-bg text-gray-200 min-h-screen font-sans border-ui overflow-x-hidden pb-20">
@@ -1450,7 +1597,7 @@ function MainApp() {
                         </p>
                       </div>
                       <button
-                        onClick={() => setActivePlanIdx(recommended.idx)}
+                        onClick={() => selectPlan(recommended.idx)}
                         className="shrink-0 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-[10px] font-bold transition-colors disabled:opacity-50"
                         disabled={activePlanIdx === recommended.idx}
                       >
@@ -1477,7 +1624,7 @@ function MainApp() {
                     return (
                       <button
                         key={plan.id}
-                        onClick={() => setActivePlanIdx(idx)}
+                        onClick={() => selectPlan(idx)}
                         className={cn(
                           "flex-1 py-2 text-center text-[10px] font-bold rounded-md transition-all border",
                           activePlanIdx === idx ? "bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-900/40" : "bg-slate-800 border-ui text-secondary hover:bg-slate-700",
