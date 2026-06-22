@@ -100,11 +100,13 @@ async function copyTextToClipboard(value: string): Promise<boolean> {
 function CopyActionButton({
   value,
   label,
+  buttonText,
   className,
   iconClassName,
 }: {
   value?: string | null;
   label: string;
+  buttonText?: string;
   className?: string;
   iconClassName?: string;
 }) {
@@ -136,6 +138,7 @@ function CopyActionButton({
       ) : (
         <Copy className={cn("w-3.5 h-3.5", iconClassName)} />
       )}
+      {buttonText && <span>{copied ? 'コピー済み' : buttonText}</span>}
     </button>
   );
 }
@@ -1687,7 +1690,7 @@ function MainApp() {
                         transition={{ delay: idx * 0.05 }}
                         className={cn(
                           "card-bg p-4 rounded-xl border relative overflow-hidden transition-all",
-                          isCompleted ? "border-green-500/40 opacity-60" :
+                          isCompleted ? "border-green-500/40 opacity-65 grayscale-[0.25]" :
                           leg.status === 'violation' ? "border-red-500/30" : "border-ui"
                         )}
                       >
@@ -1698,20 +1701,33 @@ function MainApp() {
                           style={{ background: difficultyColor(visit.difficulty).work }}
                         />
 
-                        <div className="flex justify-between items-start mb-2">
-                          <div className="flex items-center gap-2">
-                             <div
-                               className="px-2 py-0.5 rounded text-[10px] font-bold num-font text-white"
-                               style={{ background: difficultyColor(visit.difficulty).work }}
-                             >
-                               {visitOrderIndex}番 {leg.arrivalTime}着
-                             </div>
-                             <div className={cn(
-                               "status-dot w-2 h-2 rounded-full",
-                               leg.status === 'ok' ? "bg-green-400 shadow-[0_0_8px_#4ade80]" : leg.status === 'warning' ? "bg-yellow-400 shadow-[0_0_8px_#fbbf24]" : "bg-red-400 shadow-[0_0_8px_#f87171]"
-                             )} />
+                        <div className="flex items-start justify-between gap-3 mb-4">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <button
+                              onClick={() => toggleCompleted(visit.id)}
+                              title={isCompleted ? '完了を取り消す' : '完了にする'}
+                              className={cn(
+                                "shrink-0 h-10 px-3 rounded-lg border text-xs font-bold flex items-center gap-1.5 transition-colors",
+                                isCompleted
+                                  ? "bg-green-500/25 border-green-400/50 text-green-100"
+                                  : "bg-slate-800 border-green-500/40 text-green-300 hover:bg-green-500/15"
+                              )}
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              {isCompleted ? '完了済み' : '完了'}
+                            </button>
+                            <div
+                              className="shrink-0 px-2 py-1 rounded text-[10px] font-bold num-font text-white"
+                              style={{ background: difficultyColor(visit.difficulty).work }}
+                            >
+                              {visitOrderIndex}番 {leg.arrivalTime}着
+                            </div>
+                            <div className={cn(
+                              "status-dot w-2.5 h-2.5 rounded-full shrink-0",
+                              leg.status === 'ok' ? "bg-green-400 shadow-[0_0_8px_#4ade80]" : leg.status === 'warning' ? "bg-yellow-400 shadow-[0_0_8px_#fbbf24]" : "bg-red-400 shadow-[0_0_8px_#f87171]"
+                            )} />
                           </div>
-                          <div className="flex gap-1">
+                          <div className="flex gap-1 shrink-0">
                             {activePlan.id === 'X' && (
                               <>
                                 <button
@@ -1732,98 +1748,74 @@ function MainApp() {
                                 </button>
                               </>
                             )}
-                            <CopyActionButton
-                              value={visit.address}
-                              label="住所をコピー"
-                              className="border-0 bg-transparent hover:bg-slate-800"
-                              iconClassName="w-4 h-4"
-                            />
-                            {phoneNumber && (
-                              <>
-                                <CopyActionButton
-                                  value={phoneNumber}
-                                  label="電話番号をコピー"
-                                  className="border-0 bg-transparent hover:bg-slate-800"
-                                  iconClassName="w-4 h-4"
-                                />
-                                <a
-                                  href={`tel:${phoneNumber.replace(/[^\d+]/g, '')}`}
-                                  title="電話をかける"
-                                  aria-label="電話をかける"
-                                  className="p-1.5 hover:bg-green-500/10 rounded transition-colors"
-                                >
-                                  <Phone className="w-4 h-4 text-green-400" />
-                                </a>
-                              </>
-                            )}
-                            <button
-                              onClick={() => toggleCompleted(visit.id)}
-                              title={isCompleted ? '完了を取り消す' : '完了にする'}
-                              className={cn(
-                                "p-1.5 rounded transition-colors",
-                                isCompleted ? "bg-green-500/30 text-green-200" : "hover:bg-green-500/10 text-green-400"
-                              )}
-                            >
-                              <CheckCircle2 className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => {
-                                const destination = formatMapsPoint(visit.address, visit.coords);
-                                window.open(
-                                  buildGoogleMapsDirectionsUrl({ destination }),
-                                  '_blank',
-                                  'noopener,noreferrer'
-                                );
-                              }}
-                              title="この訪問先にナビ"
-                              className="p-1.5 hover:bg-blue-500/10 rounded"
-                            >
-                              <Navigation className="w-4 h-4 text-blue-400" />
-                            </button>
                           </div>
                         </div>
 
-                        <h3 className={cn("text-base font-bold mb-0.5 truncate", isCompleted && "line-through text-secondary")}>
+                        <h3 className={cn("text-xl font-bold mb-3 leading-tight", isCompleted && "line-through text-secondary")}>
                           {(() => {
                             const task = settings.tasks.find(t => t.id === visit.taskId);
                             if (task) return task.name;
                             return '訪問先';
                           })()}
                         </h3>
-                        <div className="mb-3 space-y-1">
-                          <p className={cn("text-[10px] truncate", isCompleted ? "text-secondary line-through" : "text-secondary")}>
-                            {visit.address}
-                          </p>
-                          {phoneNumber && (
-                            <p className={cn("text-[10px] flex items-center gap-1.5 num-font", isCompleted ? "text-secondary line-through" : "text-green-300")}>
-                              <Phone className="w-3 h-3 shrink-0" />
-                              {phoneNumber}
-                            </p>
-                          )}
-                        </div>
 
-                        <div className="grid grid-cols-2 gap-2 text-[11px]">
-                          <div className="bg-slate-800/50 p-2 rounded border border-ui">
-                            <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">指定時間</span>
-                            <span className={cn(
-                              "font-bold",
-                              leg.status === 'ok' ? "text-green-400" : leg.status === 'warning' ? "text-yellow-400" : "text-red-400"
-                            )}>
-                              {(() => {
-                                const tw = visit.timeWindow;
-                                if (!tw) return "指定なし";
-                                if (tw.start && tw.end) return `${tw.start}-${tw.end}`;
-                                if (tw.start) return `${tw.start} 以降`;
-                                if (tw.end) return `${tw.end} 以前`;
-                                return "指定なし";
-                              })()}
-                            </span>
+                        <div className="space-y-4">
+                          <div className="space-y-2">
+                            <p className={cn("text-sm leading-relaxed break-words", isCompleted ? "text-secondary line-through" : "text-gray-200")}>
+                              {visit.address}
+                            </p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                onClick={() => {
+                                  const destination = formatMapsPoint(visit.address, visit.coords);
+                                  window.open(
+                                    buildGoogleMapsDirectionsUrl({ destination }),
+                                    '_blank',
+                                    'noopener,noreferrer'
+                                  );
+                                }}
+                                title="地図を起動"
+                                className="h-10 rounded-lg border border-blue-500/30 bg-blue-500/10 text-blue-200 hover:bg-blue-500/20 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                              >
+                                <Navigation className="w-4 h-4" />
+                                地図起動
+                              </button>
+                              <CopyActionButton
+                                value={visit.address}
+                                label="住所をコピー"
+                                buttonText="住所コピー"
+                                className="h-10 justify-center gap-1.5 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-xs font-bold flex items-center"
+                                iconClassName="w-4 h-4"
+                              />
+                            </div>
                           </div>
-                          <div className="bg-slate-800/50 p-2 rounded border border-ui">
-                            <span className="text-secondary block text-[9px] uppercase font-bold mb-0.5">滞在 / 完了</span>
-                            <span className="font-bold">{visit.workMinutes + 30}分 → {leg.endTime}</span>
-                            <span className="block text-[9px] text-secondary font-medium mt-0.5">準備15+作業{visit.workMinutes}+撤収15</span>
-                          </div>
+
+                          {phoneNumber && (
+                            <div className="space-y-2">
+                              <p className={cn("text-lg flex items-center gap-2 num-font font-bold", isCompleted ? "text-secondary line-through" : "text-green-300")}>
+                                <Phone className="w-4 h-4 shrink-0" />
+                                {phoneNumber}
+                              </p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <a
+                                  href={`tel:${phoneNumber.replace(/[^\d+]/g, '')}`}
+                                  title="電話を起動"
+                                  aria-label="電話を起動"
+                                  className="h-10 rounded-lg border border-green-500/30 bg-green-500/10 text-green-200 hover:bg-green-500/20 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                                >
+                                  <Phone className="w-4 h-4" />
+                                  電話起動
+                                </a>
+                                <CopyActionButton
+                                  value={phoneNumber}
+                                  label="電話番号をコピー"
+                                  buttonText="電話番号コピー"
+                                  className="h-10 justify-center gap-1.5 bg-slate-800 border-ui text-gray-200 hover:bg-slate-700 text-xs font-bold flex items-center"
+                                  iconClassName="w-4 h-4"
+                                />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </motion.div>
                     ) : (
@@ -2061,6 +2053,7 @@ function MainApp() {
         {pendingParsedVisits && (
           <ParsedVisitsReviewModal
             visits={pendingParsedVisits}
+            tasks={settings.tasks}
             onChange={setPendingParsedVisits}
             onConfirm={confirmParsedVisits}
             onClose={() => {
@@ -2145,11 +2138,13 @@ function MainApp() {
 
 function ParsedVisitsReviewModal({
   visits,
+  tasks,
   onChange,
   onConfirm,
   onClose,
 }: {
   visits: Visit[];
+  tasks: Settings['tasks'];
   onChange: (visits: Visit[]) => void;
   onConfirm: (visits: Visit[]) => void;
   onClose: () => void;
@@ -2187,7 +2182,7 @@ function ParsedVisitsReviewModal({
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <ClipboardList className="w-4 h-4 text-blue-400" /> 読み取り結果の確認
             </h2>
-            <p className="text-[11px] text-secondary mt-1">住所・電話番号・時間・難易度を確認して追加します。</p>
+            <p className="text-[11px] text-secondary mt-1">作業・住所・電話番号・時間・難易度を確認して追加します。</p>
           </div>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
@@ -2217,6 +2212,31 @@ function ParsedVisitsReviewModal({
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
+
+                <label className="mb-3 block">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                    <ClipboardList className="w-3.5 h-3.5" /> 作業
+                  </span>
+                  <select
+                    className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                    value={visit.taskId || ''}
+                    onChange={(e) => {
+                      const taskId = e.target.value;
+                      const task = tasks.find(t => t.id === taskId);
+                      updateVisit(visit.id, {
+                        taskId,
+                        workMinutes: task ? task.defaultMinutes : visit.workMinutes,
+                      });
+                    }}
+                  >
+                    <option value="" disabled className="text-gray-500">作業を選択...</option>
+                    {tasks.map(task => (
+                      <option key={task.id} value={task.id} className="bg-[#1A1D23]">
+                        {task.name}（{task.defaultMinutes}分）
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
                 <div className="relative">
                   <textarea
@@ -2735,7 +2755,14 @@ function CameraCTA({ onImage, disabled }: { onImage: (base64: string, mime: stri
   };
   return (
     <>
-      <input ref={fileInputRef} type="file" className="hidden" accept="image/*" onChange={handleFileChange} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        accept="image/*"
+        capture="environment"
+        onChange={handleFileChange}
+      />
       <button
         onClick={() => fileInputRef.current?.click()}
         disabled={disabled}
@@ -2807,6 +2834,7 @@ function ImageInput({ onImage, disabled }: { onImage: (base64: string, mime: str
         ref={fileInputRef} 
         className="hidden" 
         accept="image/*" 
+        capture="environment"
         onChange={handleFileChange} 
       />
       <IconButton 
