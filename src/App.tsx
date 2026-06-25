@@ -21,6 +21,8 @@ import {
   Mic, 
   Camera,
   Image as ImageIcon,
+  Crop,
+  X,
   Settings as SettingsIcon,
   CheckCircle2,
   AlertTriangle,
@@ -1513,8 +1515,8 @@ function MainApp() {
                 )}
               </div>
 
-              {/* Prominent CTA row: camera + voice */}
-              <div className="grid grid-cols-2 gap-2 mb-3">
+              {/* Prominent CTA row: camera + library + voice */}
+              <div className="grid grid-cols-3 gap-2 mb-3">
                 <CameraCTA onImage={handleParseImage} disabled={isParsingImage} />
                 <VoiceCTA onText={(t) => setInputText(t)} />
               </div>
@@ -2807,42 +2809,276 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
   );
 }
 
+type PendingImage = {
+  dataUrl: string;
+  mime: string;
+  name: string;
+};
+
+type CropRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+const MIN_CROP_SIZE = 40;
+
 function CameraCTA({ onImage, disabled }: { onImage: (base64: string, mime: string) => void, disabled: boolean }) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const libraryInputRef = useRef<HTMLInputElement>(null);
+  const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const base64 = (ev.target?.result as string).split(',')[1];
-      onImage(base64, file.type);
+      setPendingImage({
+        dataUrl: ev.target?.result as string,
+        mime: file.type || 'image/jpeg',
+        name: file.name || '伝票画像',
+      });
     };
     reader.readAsDataURL(file);
     e.target.value = '';
   };
+
+  const handleImageReady = (dataUrl: string, mime: string) => {
+    const base64 = dataUrl.split(',')[1];
+    onImage(base64, mime);
+    setPendingImage(null);
+  };
+
   return (
     <>
       <input
-        ref={fileInputRef}
+        ref={cameraInputRef}
         type="file"
         className="hidden"
         accept="image/*"
         capture="environment"
         onChange={handleFileChange}
       />
+      <input
+        ref={libraryInputRef}
+        type="file"
+        className="hidden"
+        accept="image/*"
+        onChange={handleFileChange}
+      />
       <button
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => cameraInputRef.current?.click()}
         disabled={disabled}
         className={cn(
-          "py-3 px-3 rounded-lg flex items-center justify-center gap-2 border transition-all",
+          "py-3 px-2 rounded-lg flex items-center justify-center gap-1.5 border transition-all",
           "bg-blue-500/10 border-blue-500/30 text-blue-200 hover:bg-blue-500/20 disabled:opacity-50",
           disabled && "animate-pulse"
         )}
       >
-        <Camera className="w-5 h-5" />
-        <span className="text-xs font-bold">伝票を撮影</span>
+        <Camera className="w-5 h-5 shrink-0" />
+        <span className="text-[11px] font-bold">伝票を撮影</span>
       </button>
+      <button
+        onClick={() => libraryInputRef.current?.click()}
+        disabled={disabled}
+        className={cn(
+          "py-3 px-2 rounded-lg flex items-center justify-center gap-1.5 border transition-all",
+          "bg-cyan-500/10 border-cyan-500/30 text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50",
+          disabled && "animate-pulse"
+        )}
+      >
+        <ImageIcon className="w-5 h-5 shrink-0" />
+        <span className="text-[11px] font-bold">ライブラリ</span>
+      </button>
+      {pendingImage && (
+        <ImageCropModal
+          image={pendingImage}
+          onClose={() => setPendingImage(null)}
+          onConfirm={handleImageReady}
+        />
+      )}
     </>
+  );
+}
+
+function ImageCropModal({
+  image,
+  onClose,
+  onConfirm,
+}: {
+  image: PendingImage;
+  onClose: () => void;
+  onConfirm: (dataUrl: string, mime: string) => void;
+}) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const [crop, setCrop] = useState<CropRect | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  const getImagePoint = (clientX: number, clientY: number) => {
+    const img = imgRef.current;
+    if (!img || !naturalSize.width || !naturalSize.height) return null;
+    const rect = img.getBoundingClientRect();
+    const x = Math.max(0, Math.min(naturalSize.width, ((clientX - rect.left) / rect.width) * naturalSize.width));
+    const y = Math.max(0, Math.min(naturalSize.height, ((clientY - rect.top) / rect.height) * naturalSize.height));
+    return { x, y };
+  };
+
+  const beginCrop = (event: React.PointerEvent<HTMLDivElement>) => {
+    const point = getImagePoint(event.clientX, event.clientY);
+    if (!point) return;
+    dragStartRef.current = point;
+    setCrop({ ...point, width: 1, height: 1 });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const updateCrop = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    const point = getImagePoint(event.clientX, event.clientY);
+    if (!point) return;
+    setCrop({
+      x: Math.min(start.x, point.x),
+      y: Math.min(start.y, point.y),
+      width: Math.abs(point.x - start.x),
+      height: Math.abs(point.y - start.y),
+    });
+  };
+
+  const endCrop = (event: React.PointerEvent<HTMLDivElement>) => {
+    dragStartRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {}
+  };
+
+  const cropToDataUrl = (rect: CropRect) => {
+    const img = imgRef.current;
+    if (!img) return image.dataUrl;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(rect.width));
+    canvas.height = Math.max(1, Math.round(rect.height));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return image.dataUrl;
+    ctx.drawImage(
+      img,
+      Math.round(rect.x),
+      Math.round(rect.y),
+      Math.round(rect.width),
+      Math.round(rect.height),
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+    return canvas.toDataURL('image/jpeg', 0.92);
+  };
+
+  const handleConfirmCrop = () => {
+    if (!crop || crop.width < MIN_CROP_SIZE || crop.height < MIN_CROP_SIZE) {
+      onConfirm(image.dataUrl, image.mime);
+      return;
+    }
+    onConfirm(cropToDataUrl(crop), 'image/jpeg');
+  };
+
+  const cropStyle = crop && naturalSize.width && naturalSize.height
+    ? {
+        left: `${(crop.x / naturalSize.width) * 100}%`,
+        top: `${(crop.y / naturalSize.height) * 100}%`,
+        width: `${(crop.width / naturalSize.width) * 100}%`,
+        height: `${(crop.height / naturalSize.height) * 100}%`,
+      }
+    : undefined;
+  const canCrop = Boolean(crop && crop.width >= MIN_CROP_SIZE && crop.height >= MIN_CROP_SIZE);
+
+  return (
+    <motion.div
+      className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-center justify-center p-3"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <motion.div
+        className="w-full max-w-3xl max-h-[92vh] bg-card border border-ui rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        initial={{ scale: 0.96, y: 18 }}
+        animate={{ scale: 1, y: 0 }}
+      >
+        <div className="p-4 border-b border-ui flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Crop className="w-4 h-4 text-blue-300" />
+              読み取り範囲をトリミング
+            </h3>
+            <p className="text-[11px] text-secondary mt-1">{image.name}</p>
+          </div>
+          <button onClick={onClose} className="p-2 text-secondary hover:text-white rounded-lg hover:bg-slate-800">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 overflow-y-auto">
+          <div
+            className="relative mx-auto max-h-[58vh] w-fit select-none touch-none rounded-lg overflow-hidden bg-slate-950 border border-ui"
+            onPointerDown={beginCrop}
+            onPointerMove={updateCrop}
+            onPointerUp={endCrop}
+            onPointerCancel={endCrop}
+          >
+            <img
+              ref={imgRef}
+              src={image.dataUrl}
+              alt="読み取り対象の伝票"
+              className="block max-w-full max-h-[58vh] object-contain"
+              draggable={false}
+              onLoad={(event) => {
+                setNaturalSize({
+                  width: event.currentTarget.naturalWidth,
+                  height: event.currentTarget.naturalHeight,
+                });
+              }}
+            />
+            {cropStyle && (
+              <div
+                className="absolute border-2 border-blue-300 bg-blue-400/10 shadow-[0_0_0_9999px_rgba(0,0,0,0.38)] pointer-events-none"
+                style={cropStyle}
+              />
+            )}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-3 text-center">
+            住所・電話番号・訪問時間が写っている範囲をドラッグしてください。未選択なら画像全体を読み取ります。
+          </p>
+        </div>
+
+        <div className="p-4 border-t border-ui bg-slate-900/80 grid grid-cols-3 gap-2">
+          <button
+            onClick={() => setCrop(null)}
+            disabled={!crop}
+            className="py-3 px-3 rounded-lg border border-ui text-secondary text-xs font-bold hover:bg-slate-800 disabled:opacity-40"
+          >
+            範囲を解除
+          </button>
+          <button
+            onClick={() => onConfirm(image.dataUrl, image.mime)}
+            className="py-3 px-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 text-cyan-200 text-xs font-bold hover:bg-cyan-500/20"
+          >
+            全体を使う
+          </button>
+          <button
+            onClick={handleConfirmCrop}
+            className={cn(
+              "py-3 px-3 rounded-lg border text-xs font-bold transition-colors",
+              canCrop
+                ? "border-blue-500/50 bg-blue-600 text-white hover:bg-blue-500"
+                : "border-blue-500/25 bg-blue-600/40 text-blue-100"
+            )}
+          >
+            {canCrop ? "この範囲で読み取り" : "読み取りへ進む"}
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
