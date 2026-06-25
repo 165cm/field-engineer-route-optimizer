@@ -23,6 +23,8 @@ import {
   Image as ImageIcon,
   Crop,
   X,
+  Search,
+  CalendarDays,
   Settings as SettingsIcon,
   CheckCircle2,
   AlertTriangle,
@@ -215,6 +217,7 @@ function normalizeRoutePlan(plan: RoutePlan): RoutePlan {
 
 const PLAN_DISPLAY_ORDER: RoutePlan['id'][] = ['C', 'A', 'B', 'X'];
 const ROUTE_SESSION_STORAGE_KEY = 'repair_route_session_v1';
+const VISIT_HISTORY_STORAGE_KEY = 'repair_visit_history_v1';
 
 type StoredRouteSession = {
   plans: RoutePlan[];
@@ -226,11 +229,115 @@ type StoredRouteSession = {
   settingsSignature: string;
 };
 
+type VisitHistoryEntry = {
+  id: string;
+  address: string;
+  phoneNumber?: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+};
+
 function orderRoutePlans(plans: RoutePlan[]): RoutePlan[] {
   return plans
     .map(normalizeRoutePlan)
     .slice()
     .sort((a, b) => PLAN_DISPLAY_ORDER.indexOf(a.id) - PLAN_DISPLAY_ORDER.indexOf(b.id));
+}
+
+function todayKey(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatHistoryDate(value: string): string {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  return `${Number(match[2])}/${Number(match[3])}`;
+}
+
+function normalizeHistoryAddress(value: string): string {
+  return value.replace(/\s+/g, '').trim().toLowerCase();
+}
+
+function readVisitHistory(): VisitHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(VISIT_HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const entries: VisitHistoryEntry[] = parsed
+      .map((item: any): VisitHistoryEntry | null => {
+        const address = typeof item.address === 'string' ? item.address.trim() : '';
+        if (!address) return null;
+        const lastSeenAt = typeof item.lastSeenAt === 'string' ? item.lastSeenAt : todayKey();
+        return {
+          id: typeof item.id === 'string' ? item.id : Math.random().toString(36).substr(2, 9),
+          address,
+          phoneNumber: typeof item.phoneNumber === 'string' && item.phoneNumber.trim()
+            ? item.phoneNumber.trim()
+            : undefined,
+          firstSeenAt: typeof item.firstSeenAt === 'string' ? item.firstSeenAt : lastSeenAt,
+          lastSeenAt,
+        };
+      })
+      .filter((item): item is VisitHistoryEntry => item !== null);
+    return entries.sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
+  } catch {
+    return [];
+  }
+}
+
+function writeVisitHistory(history: VisitHistoryEntry[]) {
+  try {
+    localStorage.setItem(VISIT_HISTORY_STORAGE_KEY, JSON.stringify(history.slice(0, 300)));
+  } catch {}
+}
+
+function upsertVisitHistory(history: VisitHistoryEntry[], visits: Visit[]): VisitHistoryEntry[] {
+  const today = todayKey();
+  const historyPairs: Array<[string, VisitHistoryEntry]> = history.map(item => [
+    normalizeHistoryAddress(item.address),
+    item,
+  ]);
+  const byAddress = new globalThis.Map<string, VisitHistoryEntry>(historyPairs);
+  let changed = false;
+
+  visits.forEach(visit => {
+    const address = visit.address.trim();
+    if (!address) return;
+    const phoneNumber = visit.phoneNumber?.trim() || undefined;
+    const key = normalizeHistoryAddress(address);
+    const existing = byAddress.get(key);
+    if (!existing) {
+      byAddress.set(key, {
+        id: Math.random().toString(36).substr(2, 9),
+        address,
+        phoneNumber,
+        firstSeenAt: today,
+        lastSeenAt: today,
+      });
+      changed = true;
+      return;
+    }
+    const nextPhone = phoneNumber || existing.phoneNumber;
+    if (existing.address !== address || existing.phoneNumber !== nextPhone || existing.lastSeenAt !== today) {
+      byAddress.set(key, {
+        ...existing,
+        address,
+        phoneNumber: nextPhone,
+        lastSeenAt: today,
+      });
+      changed = true;
+    }
+  });
+
+  if (!changed) return history;
+  return Array.from(byAddress.values())
+    .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+    .slice(0, 300);
 }
 
 function buildVisitSignature(visits: Visit[]): string {
@@ -598,6 +705,7 @@ function MainApp() {
       coords: v.coords,
     }));
   });
+  const [visitHistory, setVisitHistory] = useState<VisitHistoryEntry[]>(() => readVisitHistory());
 
   const restoredRouteSessionRef = useRef<StoredRouteSession | null>(readStoredRouteSession(visits, settings));
   const [plans, setPlans] = useState<RoutePlan[]>(() => restoredRouteSessionRef.current?.plans || []);
@@ -852,6 +960,15 @@ function MainApp() {
     localStorage.setItem('repair_visits', JSON.stringify(visits));
   }, [visits]);
 
+  useEffect(() => {
+    setVisitHistory(prev => {
+      const next = upsertVisitHistory(prev, visits);
+      if (next === prev) return prev;
+      writeVisitHistory(next);
+      return next;
+    });
+  }, [visits]);
+
   const handleAddVisit = () => {
     if (visits.length >= visitLimit) {
       if (userPlan === 'free') {
@@ -866,6 +983,32 @@ function MainApp() {
       difficulty: 2
     };
     setVisits([...visits, newVisit]);
+  };
+
+  const handleAddVisitFromHistory = (entry: VisitHistoryEntry) => {
+    if (visits.length >= visitLimit) {
+      if (userPlan === 'free') {
+        promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`);
+      }
+      return;
+    }
+    const newVisit: Visit = {
+      id: Math.random().toString(36).substr(2, 9),
+      address: entry.address,
+      phoneNumber: entry.phoneNumber,
+      workMinutes: 60,
+      difficulty: 2,
+    };
+    setVisits([...visits, newVisit]);
+    showNotice({ kind: 'success', title: '履歴から訪問先を追加しました', detail: entry.address });
+  };
+
+  const handleDeleteVisitHistory = (id: string) => {
+    setVisitHistory(prev => {
+      const next = prev.filter(item => item.id !== id);
+      writeVisitHistory(next);
+      return next;
+    });
   };
 
   const handleUpdateVisit = (id: string, updates: Partial<Visit>) => {
@@ -1449,6 +1592,12 @@ function MainApp() {
                 </div>
               )}
             </div>
+
+            <VisitHistoryPanel
+              history={visitHistory}
+              onAdd={handleAddVisitFromHistory}
+              onDelete={handleDeleteVisitHistory}
+            />
 
             {/* Lunch Break Settings */}
             <div className="bg-card p-4 rounded-xl border border-ui mt-4">
@@ -2202,6 +2351,140 @@ function MainApp() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function VisitHistoryPanel({
+  history,
+  onAdd,
+  onDelete,
+}: {
+  history: VisitHistoryEntry[];
+  onAdd: (entry: VisitHistoryEntry) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredHistory = normalizedQuery
+    ? history.filter(item => {
+        const haystack = [
+          item.address,
+          item.phoneNumber || '',
+          item.lastSeenAt,
+          formatHistoryDate(item.lastSeenAt),
+        ].join(' ').toLowerCase();
+        return haystack.includes(normalizedQuery);
+      })
+    : history;
+  const grouped = filteredHistory.reduce<Record<string, VisitHistoryEntry[]>>((acc, item) => {
+    (acc[item.lastSeenAt] ||= []).push(item);
+    return acc;
+  }, {});
+  const groupedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+
+  return (
+    <section className="bg-card p-4 rounded-xl border border-ui">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
+            <CalendarDays className="w-4 h-4 text-emerald-400" />
+            訪問履歴
+          </h3>
+          <p className="text-[10px] text-slate-500 mt-1">
+            取得済みの住所・電話番号を日付別に保存
+          </p>
+        </div>
+        <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
+          {history.length}件
+        </span>
+      </div>
+
+      <div className="relative mb-3">
+        <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+        <input
+          className="w-full bg-[#1A1D23] border border-ui rounded-lg pl-9 pr-3 py-2.5 text-xs font-medium outline-none focus:border-emerald-500/50 transition-colors"
+          placeholder="住所・電話番号・日付で検索"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {history.length === 0 ? (
+        <div className="border border-dashed border-ui rounded-lg p-4 text-center">
+          <p className="text-xs font-bold text-slate-300">まだ履歴はありません</p>
+          <p className="text-[10px] text-slate-500 mt-1">訪問先に住所を入れると自動で保存されます。</p>
+        </div>
+      ) : groupedDates.length === 0 ? (
+        <div className="border border-dashed border-ui rounded-lg p-4 text-center">
+          <p className="text-xs font-bold text-slate-300">該当する履歴がありません</p>
+          <p className="text-[10px] text-slate-500 mt-1">検索語を短くすると見つかりやすくなります。</p>
+        </div>
+      ) : (
+        <div className="max-h-80 overflow-y-auto custom-scrollbar space-y-4 pr-1">
+          {groupedDates.map(date => (
+            <div key={date}>
+              <div className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm pb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-extrabold text-white num-font">{formatHistoryDate(date)}</span>
+                  <span className="text-[10px] text-slate-500">{date}</span>
+                </div>
+                <span className="text-[10px] text-slate-500 font-bold">{grouped[date].length}件</span>
+              </div>
+              <div className="space-y-2">
+                {grouped[date].map(item => {
+                  const telHref = item.phoneNumber ? `tel:${item.phoneNumber.replace(/[^\d+]/g, '')}` : '';
+                  return (
+                    <div key={item.id} className="rounded-lg border border-ui bg-slate-800/40 p-3">
+                      <div className="flex items-start gap-2">
+                        <MapPin className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold text-white leading-relaxed break-words">{item.address}</p>
+                          {item.phoneNumber ? (
+                            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-300">
+                              <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                              <span className="num-font">{item.phoneNumber}</span>
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-500 mt-1">電話番号なし</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-4 gap-2 mt-3">
+                        <button
+                          onClick={() => onAdd(item)}
+                          className="col-span-2 py-2 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-emerald-200 text-[11px] font-bold hover:bg-emerald-600/30 transition-colors"
+                        >
+                          追加
+                        </button>
+                        {item.phoneNumber ? (
+                          <a
+                            href={telHref}
+                            className="py-2 rounded-md bg-slate-900 border border-ui text-slate-200 text-[11px] font-bold hover:bg-slate-800 transition-colors text-center"
+                          >
+                            発信
+                          </a>
+                        ) : (
+                          <button disabled className="py-2 rounded-md bg-slate-900 border border-ui text-slate-600 text-[11px] font-bold">
+                            発信
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onDelete(item.id)}
+                          title="履歴から削除"
+                          className="py-2 rounded-md bg-red-500/10 border border-red-500/20 text-red-300 text-[11px] font-bold hover:bg-red-500/20 transition-colors flex items-center justify-center"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
