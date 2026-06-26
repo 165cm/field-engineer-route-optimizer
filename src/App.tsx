@@ -37,7 +37,9 @@ import {
   ArrowUp,
   ArrowDown,
   Phone,
-  Copy
+  Copy,
+  Pencil,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -823,8 +825,24 @@ function MainApp() {
     onRetry?: () => void;
   };
   const [notice, setNotice] = useState<Notice | null>(null);
-  const showNotice = (n: Notice) => setNotice(n);
-  const clearNotice = () => setNotice(null);
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showNotice = (n: Notice) => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = null;
+    setNotice(n);
+    if (n.kind !== 'error') {
+      const delay = n.kind === 'success' ? 3000 : 5000;
+      noticeTimerRef.current = setTimeout(() => {
+        setNotice(null);
+        noticeTimerRef.current = null;
+      }, delay);
+    }
+  };
+  const clearNotice = () => {
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = null;
+    setNotice(null);
+  };
 
   const handleLoadSampleAndOptimize = () => {
     const sample: Visit[] = [
@@ -1296,6 +1314,14 @@ function MainApp() {
 
   const displayPlans = orderRoutePlans(plans);
   const activePlan = displayPlans[activePlanIdx] || displayPlans[0];
+
+  // True when visits or route-relevant settings have changed since the last
+  // optimization run, meaning the displayed result no longer matches the input.
+  const isRouteStale = plans.length > 0 && optContextRef.current !== null && (
+    buildVisitSignature(visits) !== buildVisitSignature(optContextRef.current.visits) ||
+    buildRouteSettingsSignature(settings) !== buildRouteSettingsSignature(optContextRef.current.settings)
+  );
+
   const selectPlan = (idx: number) => {
     setActivePlanIdx(idx);
     const ctx = optContextRef.current;
@@ -1708,6 +1734,25 @@ function MainApp() {
           >
             {/* Sidebar (Route List). Full-width on mobile, fixed 420px on desktop. */}
             <aside className="w-full lg:w-[420px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl lg:overflow-y-auto custom-scrollbar">
+              {/* Stale route warning — shown when input has changed since last optimization */}
+              {isRouteStale && (
+                <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <p className="text-[11px] text-amber-200 font-bold leading-snug">
+                      訪問先または設定が変更されました。再計算してください。
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => handleOptimize()}
+                    disabled={isOptimizing}
+                    className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-900 text-[11px] font-extrabold transition-colors disabled:opacity-50"
+                  >
+                    再計算
+                  </button>
+                </div>
+              )}
+
               {/* Savings Banner */}
               {baseline && (() => {
                 const FUEL_KM_PER_L = 12;
@@ -2565,30 +2610,49 @@ function ParsedVisitsReviewModal({
                   </button>
                 </div>
 
-                <label className="mb-3 block">
-                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                    <ClipboardList className="w-3.5 h-3.5" /> 作業
-                  </span>
-                  <select
-                    className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                    value={visit.taskId || ''}
-                    onChange={(e) => {
-                      const taskId = e.target.value;
-                      const task = tasks.find(t => t.id === taskId);
-                      updateVisit(visit.id, {
-                        taskId,
-                        workMinutes: task ? task.defaultMinutes : visit.workMinutes,
-                      });
-                    }}
-                  >
-                    <option value="" disabled className="text-gray-500">作業を選択...</option>
-                    {tasks.map(task => (
-                      <option key={task.id} value={task.id} className="bg-[#1A1D23]">
-                        {task.name}（{task.defaultMinutes}分）
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="mb-3 flex gap-2">
+                  <label className="flex-1 block">
+                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                      <ClipboardList className="w-3.5 h-3.5" /> 作業
+                    </span>
+                    <select
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                      value={visit.taskId || ''}
+                      onChange={(e) => {
+                        const taskId = e.target.value;
+                        const task = tasks.find(t => t.id === taskId);
+                        updateVisit(visit.id, {
+                          taskId,
+                          workMinutes: task ? task.defaultMinutes : visit.workMinutes,
+                        });
+                      }}
+                    >
+                      <option value="" disabled className="text-gray-500">作業を選択...</option>
+                      {tasks.map(task => (
+                        <option key={task.id} value={task.id} className="bg-[#1A1D23]">
+                          {task.name}（{task.defaultMinutes}分）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="w-24 block">
+                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                      <Clock className="w-3.5 h-3.5" /> 作業時間
+                    </span>
+                    <select
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                      value={visit.workMinutes}
+                      onChange={(e) => updateVisit(visit.id, { workMinutes: Number(e.target.value) })}
+                    >
+                      <option value={30}>30分</option>
+                      <option value={60}>60分</option>
+                      <option value={90}>90分</option>
+                      <option value={120}>120分</option>
+                      <option value={150}>150分</option>
+                      <option value={180}>180分</option>
+                    </select>
+                  </label>
+                </div>
 
                 <div className="relative">
                   <textarea
@@ -2871,30 +2935,54 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
   const [tasks, setTasks] = useState(settings.tasks || []);
   const [newName, setNewName] = useState('');
   const [newMinutes, setNewMinutes] = useState('60');
+  // id of task currently being edited inline, null if none
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editMinutes, setEditMinutes] = useState('');
+
+  const startEdit = (task: { id: string; name: string; defaultMinutes: number }) => {
+    setEditingId(task.id);
+    setEditName(task.name);
+    setEditMinutes(String(task.defaultMinutes));
+  };
+
+  const commitEdit = () => {
+    if (!editingId) return;
+    const trimmedName = editName.trim();
+    if (!trimmedName) { setEditingId(null); return; }
+    setTasks(prev => prev.map(t =>
+      t.id === editingId
+        ? { ...t, name: trimmedName, defaultMinutes: parseInt(editMinutes) || t.defaultMinutes }
+        : t
+    ));
+    setEditingId(null);
+  };
 
   const handleAdd = () => {
-    if (!newName) return;
-    setTasks([...tasks, { id: Date.now().toString(), name: newName, defaultMinutes: parseInt(newMinutes) || 60 }]);
+    if (!newName.trim()) return;
+    setTasks([...tasks, { id: Date.now().toString(), name: newName.trim(), defaultMinutes: parseInt(newMinutes) || 60 }]);
     setNewName('');
     setNewMinutes('60');
   };
 
   const handleRemove = (id: string) => {
+    if (editingId === id) setEditingId(null);
     setTasks(tasks.filter(t => t.id !== id));
   };
 
   const handleSave = () => {
+    if (editingId) commitEdit();
     onSave({ ...settings, tasks });
   };
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.95 }}
         animate={{ scale: 1 }}
         exit={{ scale: 0.95 }}
@@ -2904,30 +2992,84 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
           <h2 className="text-sm font-bold text-white flex items-center gap-2">作業名の設定</h2>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
-        
+
         <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
            {tasks.map(task => (
-             <div key={task.id} className="flex justify-between items-center bg-slate-800/50 p-3 rounded-xl border border-ui">
-                <div>
-                  <h4 className="text-sm font-bold text-white">{task.name}</h4>
-                  <p className="text-[10px] text-secondary mt-0.5">デフォルト: {task.defaultMinutes}分</p>
-                </div>
-                <button onClick={() => handleRemove(task.id)} className="p-2 text-red-400 hover:text-red-300 bg-red-400/10 hover:bg-red-400/20 rounded-lg transition-colors">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+             <div key={task.id} className={cn(
+               "bg-slate-800/50 p-3 rounded-xl border transition-colors",
+               editingId === task.id ? "border-blue-500/50" : "border-ui"
+             )}>
+               {editingId === task.id ? (
+                 <div className="flex gap-2 items-center">
+                   <input
+                     autoFocus
+                     className="flex-1 bg-[#1A1D23] border border-blue-500/50 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:border-blue-400"
+                     value={editName}
+                     onChange={(e) => setEditName(e.target.value)}
+                     onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingId(null); }}
+                     placeholder="作業名"
+                   />
+                   <input
+                     type="number"
+                     className="w-16 bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-sm font-bold outline-none text-right"
+                     value={editMinutes}
+                     onChange={(e) => setEditMinutes(e.target.value)}
+                     min="1"
+                   />
+                   <span className="text-xs text-secondary">分</span>
+                   <button
+                     onClick={commitEdit}
+                     className="p-2 text-green-400 hover:text-green-300 bg-green-400/10 hover:bg-green-400/20 rounded-lg transition-colors"
+                     title="確定"
+                   >
+                     <Check className="w-4 h-4" />
+                   </button>
+                   <button
+                     onClick={() => setEditingId(null)}
+                     className="p-2 text-secondary hover:text-white rounded-lg transition-colors"
+                     title="キャンセル"
+                   >
+                     <X className="w-4 h-4" />
+                   </button>
+                 </div>
+               ) : (
+                 <div className="flex justify-between items-center">
+                   <div>
+                     <h4 className="text-sm font-bold text-white">{task.name}</h4>
+                     <p className="text-[10px] text-secondary mt-0.5">デフォルト: {task.defaultMinutes}分</p>
+                   </div>
+                   <div className="flex items-center gap-1">
+                     <button
+                       onClick={() => startEdit(task)}
+                       className="p-2 text-blue-400 hover:text-blue-300 bg-blue-400/10 hover:bg-blue-400/20 rounded-lg transition-colors"
+                       title="編集"
+                     >
+                       <Pencil className="w-4 h-4" />
+                     </button>
+                     <button
+                       onClick={() => handleRemove(task.id)}
+                       className="p-2 text-red-400 hover:text-red-300 bg-red-400/10 hover:bg-red-400/20 rounded-lg transition-colors"
+                       title="削除"
+                     >
+                       <Trash2 className="w-4 h-4" />
+                     </button>
+                   </div>
+                 </div>
+               )}
              </div>
            ))}
 
            <div className="mt-6 border-t border-ui pt-4">
              <h4 className="text-xs font-bold text-secondary uppercase tracking-widest mb-3">新規追加</h4>
              <div className="flex gap-2">
-               <input 
+               <input
                  className="flex-1 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none placeholder:text-slate-600 font-bold"
                  value={newName}
                  onChange={(e) => setNewName(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
                  placeholder="作業名 (例: 点検)"
                />
-               <input 
+               <input
                  type="number"
                  className="w-20 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none text-right"
                  value={newMinutes}
@@ -2936,9 +3078,9 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
                  min="1"
                />
                <span className="flex items-center text-sm text-secondary -ml-1">分</span>
-               <button 
+               <button
                  onClick={handleAdd}
-                 disabled={!newName}
+                 disabled={!newName.trim()}
                  className="px-4 py-2 bg-blue-600 disabled:opacity-50 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg"
                >
                  追加
