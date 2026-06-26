@@ -1368,7 +1368,7 @@ function MainApp() {
              </span>
            ) : (
              <button
-               onClick={() => promptUpgrade('Proにアップグレードすると、最大15件の訪問・GPS現在地起点・月次レポートが使えます。')}
+               onClick={() => promptUpgrade(`Proにアップグレードすると、最大${getVisitLimit('pro')}件の訪問・GPS現在地起点・月次レポートが使えます。`)}
                className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded bg-slate-800 text-blue-300 border border-blue-500/30 hover:bg-blue-500/10"
              >
                Free · アップグレード
@@ -2808,7 +2808,7 @@ function UpgradeModal({ reason, onClose, onUpgrade }: { reason: string; onClose:
         </div>
         <p className="text-sm text-gray-300 mb-5">{reason}</p>
         <div className="bg-slate-800/50 rounded-lg p-4 border border-ui mb-5 space-y-2 text-xs">
-          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 訪問先 1日 <strong className="text-white">15件</strong> まで</div>
+          <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 訪問先 1日 <strong className="text-white">{getVisitLimit('pro')}件</strong> まで</div>
           <div className="flex items-center gap-2"><span className="text-green-400">✓</span> GPS現在地から再最適化</div>
           <div className="flex items-center gap-2"><span className="text-green-400">✓</span> 月次節約レポート</div>
           <div className="flex items-center gap-2"><span className="text-green-400">✓</span> マルチデバイス同期（近日対応）</div>

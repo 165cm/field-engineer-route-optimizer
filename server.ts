@@ -7,9 +7,9 @@ dotenv.config();
 
 // Hard caps to keep per-user API spend predictable.
 // Server-side hard cap. The client further enforces a per-plan limit
-// (Free=3, Pro=15) defined in src/lib/plan.ts. Keep this in sync with
+// (Free=3, Pro=5) defined in src/lib/plan.ts. Keep this in sync with
 // the Pro plan ceiling so a Pro user can fully use parsing.
-const MAX_VISITS_PER_PARSE = 15;
+const MAX_VISITS_PER_PARSE = 5;
 
 // Pin to a stable, GA model so billing and behavior are predictable.
 // Preview model IDs (e.g. gemini-3-flash-preview) can change pricing or be
