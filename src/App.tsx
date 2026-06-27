@@ -218,6 +218,7 @@ function normalizeRoutePlan(plan: RoutePlan): RoutePlan {
 const PLAN_DISPLAY_ORDER: RoutePlan['id'][] = ['C', 'A', 'B', 'X'];
 const ROUTE_SESSION_STORAGE_KEY = 'repair_route_session_v1';
 const VISIT_HISTORY_STORAGE_KEY = 'repair_visit_history_v1';
+type AppTab = 'input' | 'result' | 'history';
 
 type StoredRouteSession = {
   plans: RoutePlan[];
@@ -730,7 +731,7 @@ function MainApp() {
       return next;
     });
   };
-  const [activeTab, setActiveTab] = useState<'input' | 'result'>(() => restoredRouteSessionRef.current ? 'result' : 'input');
+  const [activeTab, setActiveTab] = useState<AppTab>(() => restoredRouteSessionRef.current ? 'result' : 'input');
   const [activePlanIdx, setActivePlanIdx] = useState(() => {
     const restoredIdx = restoredRouteSessionRef.current?.activePlanIdx ?? 0;
     const restoredPlans = restoredRouteSessionRef.current?.plans || [];
@@ -795,6 +796,7 @@ function MainApp() {
   const [isParsingImage, setIsParsingImage] = useState(false);
   const [pendingParsedVisits, setPendingParsedVisits] = useState<Visit[] | null>(null);
   const [pendingParseSource, setPendingParseSource] = useState<'text' | 'image' | null>(null);
+  const [showVisitAddSheet, setShowVisitAddSheet] = useState(false);
 
   const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
   const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
@@ -969,7 +971,7 @@ function MainApp() {
     });
   }, [visits]);
 
-  const handleAddVisit = () => {
+  const handleAddBlankVisit = () => {
     if (visits.length >= visitLimit) {
       if (userPlan === 'free') {
         promptUpgrade(`無料プランは1日${visitLimit}件まで。Proなら${getVisitLimit('pro')}件まで登録できます。`);
@@ -983,6 +985,8 @@ function MainApp() {
       difficulty: 2
     };
     setVisits([...visits, newVisit]);
+    setActiveTab('input');
+    setShowVisitAddSheet(false);
   };
 
   const handleAddVisitFromHistory = (entry: VisitHistoryEntry) => {
@@ -1000,6 +1004,8 @@ function MainApp() {
       difficulty: 2,
     };
     setVisits([...visits, newVisit]);
+    setActiveTab('input');
+    setShowVisitAddSheet(false);
     showNotice({ kind: 'success', title: '履歴から訪問先を追加しました', detail: entry.address });
   };
 
@@ -1377,8 +1383,64 @@ function MainApp() {
         </div>
       </nav>
 
+      <div className="sticky top-16 z-30 bg-[#1A1D23]/95 backdrop-blur-md border-b border-ui px-4 py-2">
+        <div className="max-w-2xl lg:max-w-5xl mx-auto grid grid-cols-3 gap-2">
+          <button
+            onClick={() => setActiveTab('input')}
+            className={cn(
+              "py-2 rounded-lg border text-[11px] font-bold transition-colors flex items-center justify-center gap-1.5",
+              activeTab === 'input'
+                ? "bg-blue-500/20 border-blue-500/40 text-blue-200"
+                : "bg-slate-800/40 border-ui text-secondary hover:text-white"
+            )}
+          >
+            <ClipboardList className="w-3.5 h-3.5" />
+            入力
+          </button>
+          <button
+            onClick={() => activePlan ? setActiveTab('result') : showNotice({ kind: 'info', title: '先にルートを計算してください', detail: '訪問先を入力してからルート計算を実行すると結果を表示できます。' })}
+            className={cn(
+              "py-2 rounded-lg border text-[11px] font-bold transition-colors flex items-center justify-center gap-1.5",
+              activeTab === 'result'
+                ? "bg-blue-500/20 border-blue-500/40 text-blue-200"
+                : "bg-slate-800/40 border-ui text-secondary hover:text-white"
+            )}
+          >
+            <Navigation className="w-3.5 h-3.5" />
+            ルート
+          </button>
+          <button
+            onClick={() => setActiveTab('history')}
+            className={cn(
+              "py-2 rounded-lg border text-[11px] font-bold transition-colors flex items-center justify-center gap-1.5",
+              activeTab === 'history'
+                ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-200"
+                : "bg-slate-800/40 border-ui text-secondary hover:text-white"
+            )}
+          >
+            <CalendarDays className="w-3.5 h-3.5" />
+            履歴
+          </button>
+        </div>
+      </div>
+
       <AnimatePresence mode="wait">
-        {activeTab === 'input' || !activePlan ? (
+        {activeTab === 'history' ? (
+          <motion.div
+            key="history"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="p-4 space-y-4 max-w-5xl mx-auto"
+          >
+            <VisitHistoryPanel
+              history={visitHistory}
+              onAdd={handleAddVisitFromHistory}
+              onDelete={handleDeleteVisitHistory}
+              variant="full"
+            />
+          </motion.div>
+        ) : activeTab === 'input' || !activePlan ? (
           <motion.div 
             key="input"
             initial={{ opacity: 0, y: 20 }}
@@ -1569,7 +1631,7 @@ function MainApp() {
 
               {visits.length < visitLimit ? (
                 <button
-                  onClick={handleAddVisit}
+                  onClick={() => setShowVisitAddSheet(true)}
                   className="w-full py-6 border border-dashed border-ui rounded-xl flex flex-col items-center justify-center text-secondary hover:border-blue-500/50 hover:bg-blue-500/5 transition-all"
                 >
                   <Plus className="w-6 h-6 mb-1 text-blue-500" />
@@ -1592,12 +1654,6 @@ function MainApp() {
                 </div>
               )}
             </div>
-
-            <VisitHistoryPanel
-              history={visitHistory}
-              onAdd={handleAddVisitFromHistory}
-              onDelete={handleDeleteVisitHistory}
-            />
 
             {/* Lunch Break Settings */}
             <div className="bg-card p-4 rounded-xl border border-ui mt-4">
@@ -1704,7 +1760,7 @@ function MainApp() {
             initial={{ opacity: 0, x: 50 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -50 }}
-            className="flex flex-col lg:flex-row w-full lg:h-[calc(100vh-64px)] lg:overflow-hidden overflow-y-auto"
+            className="flex flex-col lg:flex-row w-full lg:h-[calc(100vh-112px)] lg:overflow-hidden overflow-y-auto"
           >
             {/* Sidebar (Route List). Full-width on mobile, fixed 420px on desktop. */}
             <aside className="w-full lg:w-[420px] lg:h-full bg-bg lg:border-r border-ui flex flex-col shrink-0 z-10 lg:shadow-2xl lg:overflow-y-auto custom-scrollbar">
@@ -2350,7 +2406,79 @@ function MainApp() {
           />
         )}
       </AnimatePresence>
+
+      {/* Visit Add Sheet */}
+      <AnimatePresence>
+        {showVisitAddSheet && (
+          <VisitAddSheet
+            history={visitHistory}
+            onBlankAdd={handleAddBlankVisit}
+            onAddFromHistory={handleAddVisitFromHistory}
+            onDeleteHistory={handleDeleteVisitHistory}
+            onClose={() => setShowVisitAddSheet(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+function VisitAddSheet({
+  history,
+  onBlankAdd,
+  onAddFromHistory,
+  onDeleteHistory,
+  onClose,
+}: {
+  history: VisitHistoryEntry[];
+  onBlankAdd: () => void;
+  onAddFromHistory: (entry: VisitHistoryEntry) => void;
+  onDeleteHistory: (id: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <motion.div
+      className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <motion.div
+        className="w-full max-w-2xl max-h-[90vh] bg-card border border-ui rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        initial={{ y: 28, scale: 0.98 }}
+        animate={{ y: 0, scale: 1 }}
+        exit={{ y: 28, scale: 0.98 }}
+      >
+        <div className="p-4 border-b border-ui flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Plus className="w-4 h-4 text-blue-300" />
+              訪問先を追加
+            </h3>
+            <p className="text-[11px] text-secondary mt-1">新規入力するか、過去の訪問履歴から選択します。</p>
+          </div>
+          <button onClick={onClose} className="p-2 text-secondary hover:text-white rounded-lg hover:bg-slate-800">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-4 overflow-y-auto custom-scrollbar space-y-3">
+          <button
+            onClick={onBlankAdd}
+            className="w-full py-4 rounded-xl border border-blue-500/30 bg-blue-500/10 text-blue-100 hover:bg-blue-500/20 transition-colors flex items-center justify-center gap-2"
+          >
+            <Plus className="w-5 h-5" />
+            <span className="text-xs font-extrabold uppercase tracking-widest">新規で追加</span>
+          </button>
+          <VisitHistoryPanel
+            history={history}
+            onAdd={onAddFromHistory}
+            onDelete={onDeleteHistory}
+            variant="picker"
+          />
+        </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -2358,10 +2486,12 @@ function VisitHistoryPanel({
   history,
   onAdd,
   onDelete,
+  variant = 'compact',
 }: {
   history: VisitHistoryEntry[];
   onAdd: (entry: VisitHistoryEntry) => void;
   onDelete: (id: string) => void;
+  variant?: 'compact' | 'full' | 'picker';
 }) {
   const [query, setQuery] = useState('');
   const normalizedQuery = query.trim().toLowerCase();
@@ -2381,17 +2511,31 @@ function VisitHistoryPanel({
     return acc;
   }, {});
   const groupedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+  const isFull = variant === 'full';
+  const isPicker = variant === 'picker';
+  const title = isFull ? '訪問履歴一覧' : isPicker ? '履歴から追加' : '訪問履歴';
+  const description = isFull
+    ? '過去に取得した住所・電話番号を日付別に遡れます'
+    : isPicker
+      ? '住所・電話番号・日付で絞り込んで追加できます'
+      : '取得済みの住所・電話番号を日付別に保存';
 
   return (
-    <section className="bg-card p-4 rounded-xl border border-ui">
+    <section className={cn(
+      isPicker ? "p-0" : "bg-card p-4 rounded-xl border border-ui",
+      isFull && "min-h-[calc(100vh-150px)]"
+    )}>
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
-          <h3 className="text-xs font-bold text-secondary flex items-center gap-2 uppercase tracking-tight">
+          <h3 className={cn(
+            "font-bold flex items-center gap-2 uppercase tracking-tight",
+            isFull ? "text-sm text-white" : "text-xs text-secondary"
+          )}>
             <CalendarDays className="w-4 h-4 text-emerald-400" />
-            訪問履歴
+            {title}
           </h3>
           <p className="text-[10px] text-slate-500 mt-1">
-            取得済みの住所・電話番号を日付別に保存
+            {description}
           </p>
         </div>
         <span className="text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
@@ -2420,7 +2564,10 @@ function VisitHistoryPanel({
           <p className="text-[10px] text-slate-500 mt-1">検索語を短くすると見つかりやすくなります。</p>
         </div>
       ) : (
-        <div className="max-h-80 overflow-y-auto custom-scrollbar space-y-4 pr-1">
+        <div className={cn(
+          "overflow-y-auto custom-scrollbar space-y-4 pr-1",
+          isFull ? "max-h-none" : "max-h-80"
+        )}>
           {groupedDates.map(date => (
             <div key={date}>
               <div className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm pb-2 flex items-center justify-between">
@@ -2430,7 +2577,7 @@ function VisitHistoryPanel({
                 </div>
                 <span className="text-[10px] text-slate-500 font-bold">{grouped[date].length}件</span>
               </div>
-              <div className="space-y-2">
+              <div className={cn(isFull ? "grid gap-2 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2")}>
                 {grouped[date].map(item => {
                   const telHref = item.phoneNumber ? `tel:${item.phoneNumber.replace(/[^\d+]/g, '')}` : '';
                   return (
