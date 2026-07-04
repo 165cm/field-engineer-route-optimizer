@@ -38,6 +38,7 @@ export type TaskType = {
 export type Settings = {
   homeAddress: string;
   homeCoords?: google.maps.LatLngLiteral;
+  workDate?: string; // "YYYY-MM-DD" — used for calendar export
   startTime?: string; // "HH:mm" — departure time from start, default 09:00
   endLocation: 'home' | 'none' | 'custom';
   customEndAddress?: string;

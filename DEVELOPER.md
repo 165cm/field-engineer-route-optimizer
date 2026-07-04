@@ -79,6 +79,9 @@ npm run build
 - `GOOGLE_MAPS_PLATFORM_KEY`
   Google Maps Platform のAPIキー。
 
+- `GOOGLE_CALENDAR_CLIENT_ID`
+  Googleカレンダー直接登録用の OAuth Web Client ID。
+
 - `GEMINI_API_KEY`
   Gemini APIキー。
 
@@ -104,6 +107,7 @@ https://<owner>.github.io/<repository>/
 GitHub ActionsのSecretsに以下を登録します。
 
 - `GOOGLE_MAPS_PLATFORM_KEY`
+- `GOOGLE_CALENDAR_CLIENT_ID`
 - `GEMINI_API_KEY`
 
 MapsキーはGitHub Pages上でクライアントに露出します。必ずGCP側で制限してください。
@@ -114,6 +118,18 @@ MapsキーはGitHub Pages上でクライアントに露出します。必ずGCP�
   Maps JavaScript API, Geocoding API, Distance Matrix API, Directions API
 - 1日あたりのクォータ上限
 - 予算アラート
+
+Googleカレンダー直接登録を有効にする場合は、Google Cloud Consoleで以下を設定します。
+
+- Google Calendar API を有効化
+- OAuth consent screen を設定
+- OAuth Client ID は「ウェブ アプリケーション」で作成
+- Authorized JavaScript origins に以下を追加
+  - `http://localhost:3000`
+  - `https://<owner>.github.io`
+- 作成した Client ID を `GOOGLE_CALENDAR_CLIENT_ID` として `.env` / GitHub Secrets に設定
+
+Calendar連携はユーザーのブラウザで Google Identity Services から短期アクセストークンを取得し、Google Calendar APIへ直接登録します。ユーザーのGoogleトークンはサーバーにもlocalStorageにも保存しません。
 
 ## 実装上の注意事項
 

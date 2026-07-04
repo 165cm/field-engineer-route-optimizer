@@ -53,9 +53,19 @@ import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } fr
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 import { ScheduleClock } from './components/ScheduleClock';
 import { difficultyColor } from './lib/visitColors';
+import {
+  GoogleCalendarAuthError,
+  GoogleCalendarPartialError,
+  GoogleCalendarRouteEventInput,
+  isGoogleCalendarConfigured,
+  requestGoogleCalendarAccessToken,
+  syncRouteEventsToPrimaryCalendar,
+} from './services/googleCalendarService';
 
 const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
+const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
+const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -547,6 +557,193 @@ function buildGoogleMapsDirectionsUrl({
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+function getTodayDateInputValue(): string {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseDateTimeForCalendar(dateValue: string, timeValue: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue) || !/^\d{2}:\d{2}$/.test(timeValue)) return null;
+  const [year, month, day] = dateValue.split('-').map(Number);
+  const [hour, minute] = timeValue.split(':').map(Number);
+  const date = new Date(year, month - 1, day, hour, minute, 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function addDaysToDateInput(dateValue: string, days: number): string {
+  const [year, month, day] = dateValue.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + days));
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseTimeToMinutes(value: string): number | null {
+  if (!/^\d{2}:\d{2}$/.test(value)) return null;
+  const [hours, minutes] = value.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function formatGoogleCalendarDateTime(dateValue: string, timeValue: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue) || !/^\d{2}:\d{2}$/.test(timeValue)) return null;
+  return `${dateValue}T${timeValue}:00`;
+}
+
+function formatIcsDateTime(date: Date): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${yyyy}${mm}${dd}T${hh}${mi}${ss}`;
+}
+
+function escapeIcsText(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+function downloadTextFile(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function buildCalendarIcs({
+  plan,
+  settings,
+}: {
+  plan: RoutePlan;
+  settings: Settings;
+}): string | null {
+  const workDate = settings.workDate || getTodayDateInputValue();
+  const generatedAt = new Date();
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Route Optimizer//Field Engineer Schedule//JA',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+  ];
+
+  let count = 0;
+  plan.legs.filter(isCompleteLeg).forEach((leg) => {
+    if (!leg.visitId || !leg.arrivalTime || !leg.endTime) return;
+    const visit = plan.order.find(v => v.id === leg.visitId);
+    if (!visit) return;
+
+    const start = parseDateTimeForCalendar(workDate, leg.arrivalTime);
+    const end = parseDateTimeForCalendar(workDate, leg.endTime);
+    if (!start || !end) return;
+    if (end <= start) end.setDate(end.getDate() + 1);
+
+    count += 1;
+    const task = settings.tasks.find(t => t.id === visit.taskId);
+    const summary = `訪問${count}: ${task?.name || '現地作業'}`;
+    const description = [
+      `現地滞在予定: ${leg.arrivalTime}-${leg.endTime}`,
+      leg.workStartTime && leg.workEndTime ? `実作業: ${leg.workStartTime}-${leg.workEndTime}` : '',
+      `ルート案: ${plan.label}`,
+    ].filter(Boolean).join('\n');
+
+    lines.push(
+      'BEGIN:VEVENT',
+      `UID:${escapeIcsText(`${workDate}-${plan.id}-${leg.visitId}@field-engineer-route-optimizer`)}`,
+      `DTSTAMP:${formatIcsDateTime(generatedAt)}`,
+      `DTSTART:${formatIcsDateTime(start)}`,
+      `DTEND:${formatIcsDateTime(end)}`,
+      `SUMMARY:${escapeIcsText(summary)}`,
+      `LOCATION:${escapeIcsText(visit.address)}`,
+      `DESCRIPTION:${escapeIcsText(description)}`,
+      'END:VEVENT',
+    );
+  });
+
+  lines.push('END:VCALENDAR');
+  return count > 0 ? lines.join('\r\n') : null;
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function buildGoogleCalendarRouteEvents({
+  plan,
+  settings,
+}: {
+  plan: RoutePlan;
+  settings: Settings;
+}): { workDate: string; routeRunId: string; events: GoogleCalendarRouteEventInput[] } | null {
+  const workDate = settings.workDate || getTodayDateInputValue();
+  const visitLegs = plan.legs.filter(isCompleteLeg).filter(leg => leg.visitId);
+  const routeRunSource = [
+    workDate,
+    plan.id,
+    ...visitLegs.map(leg => `${leg.visitId}:${leg.arrivalTime}-${leg.endTime}:${leg.workStartTime || ''}-${leg.workEndTime || ''}`),
+  ].join('|');
+  const routeRunId = `route-${stableHash(routeRunSource)}`;
+  const events: GoogleCalendarRouteEventInput[] = [];
+
+  visitLegs.forEach((leg) => {
+    if (!leg.visitId) return;
+    const visit = plan.order.find(v => v.id === leg.visitId);
+    if (!visit) return;
+
+    const startMinutes = parseTimeToMinutes(leg.arrivalTime);
+    const endMinutes = parseTimeToMinutes(leg.endTime);
+    if (startMinutes === null || endMinutes === null) return;
+    const endDate = endMinutes <= startMinutes ? addDaysToDateInput(workDate, 1) : workDate;
+    const startDateTime = formatGoogleCalendarDateTime(workDate, leg.arrivalTime);
+    const endDateTime = formatGoogleCalendarDateTime(endDate, leg.endTime);
+    if (!startDateTime || !endDateTime) return;
+
+    const orderIndex = plan.order.findIndex(v => v.id === visit.id) + 1;
+    const task = settings.tasks.find(t => t.id === visit.taskId);
+    const description = [
+      `現地滞在予定: ${leg.arrivalTime}-${leg.endTime}`,
+      leg.workStartTime && leg.workEndTime ? `実作業: ${leg.workStartTime}-${leg.workEndTime}` : '',
+      `ルート案: ${plan.label}`,
+    ].filter(Boolean).join('\n');
+
+    events.push({
+      summary: `訪問${orderIndex}: ${task?.name || '現地作業'}`,
+      location: visit.address,
+      description,
+      startDateTime,
+      endDateTime,
+      timeZone: CALENDAR_TIME_ZONE,
+      metadata: {
+        workDate,
+        routePlanId: plan.id,
+        visitId: visit.id,
+        routeRunId,
+      },
+    });
+  });
+
+  return events.length > 0 ? { workDate, routeRunId, events } : null;
+}
+
 function formatVisitAddress(address: string): {
   streetLine: string;
   buildingLine: string;
@@ -683,6 +880,7 @@ function MainApp() {
       homeAddress: '東京都新宿区新宿1-1-1',
       endLocation: 'home',
       ...parsed,
+      workDate: typeof parsed.workDate === 'string' ? parsed.workDate : getTodayDateInputValue(),
       startTime: parsed.startTime || '09:00',
       lunchBreakMinutes: [0, 15, 30, 45, 60].includes(parsedLunchBreak) ? parsedLunchBreak : 0,
       tasks: parsed.tasks || [
@@ -799,6 +997,7 @@ function MainApp() {
   const [pendingParsedVisits, setPendingParsedVisits] = useState<Visit[] | null>(null);
   const [pendingParseSource, setPendingParseSource] = useState<'text' | 'image' | null>(null);
   const [showVisitAddSheet, setShowVisitAddSheet] = useState(false);
+  const [calendarRegistrationStatus, setCalendarRegistrationStatus] = useState<'idle' | 'auth' | 'registering'>('idle');
 
   const [userPlan, setUserPlanState] = useState<UserPlan>(() => getUserPlan());
   const [upgradeReason, setUpgradeReason] = useState<string | null>(null);
@@ -821,7 +1020,7 @@ function MainApp() {
   const visitLimit = getVisitLimit(userPlan);
 
   type Notice = {
-    kind: 'error' | 'info' | 'success';
+    kind: 'error' | 'info' | 'success' | 'warning';
     title: string;
     detail?: string;
     onRetry?: () => void;
@@ -1328,6 +1527,92 @@ function MainApp() {
     buildRouteSettingsSignature(settings) !== buildRouteSettingsSignature(optContextRef.current.settings)
   );
 
+  const isGoogleCalendarReady = isGoogleCalendarConfigured(GOOGLE_CALENDAR_CLIENT_ID);
+  const isRegisteringCalendar = calendarRegistrationStatus !== 'idle';
+  const handleExportCalendarIcs = () => {
+    if (!activePlan) return;
+    const ics = buildCalendarIcs({ plan: activePlan, settings });
+    if (!ics) {
+      showNotice({
+        kind: 'info',
+        title: '書き出せる滞在予定がありません',
+        detail: '訪問先のあるルート案を計算してから再度お試しください。',
+      });
+      return;
+    }
+    const workDate = settings.workDate || getTodayDateInputValue();
+    downloadTextFile(`route-schedule-${workDate}.ics`, ics, 'text/calendar;charset=utf-8');
+    showNotice({
+      kind: 'success',
+      title: 'カレンダー用ファイルを書き出しました',
+      detail: 'Googleカレンダーのインポート画面で、このICSファイルを選択すると1日分を一括登録できます。',
+    });
+  };
+  const handleRegisterGoogleCalendar = async () => {
+    if (!activePlan) return;
+    if (!isGoogleCalendarReady) {
+      showNotice({
+        kind: 'info',
+        title: 'Googleカレンダー連携が未設定です',
+        detail: '管理者は GOOGLE_CALENDAR_CLIENT_ID を設定してください。今はICS書き出しを利用できます。',
+      });
+      return;
+    }
+
+    const routeCalendarEvents = buildGoogleCalendarRouteEvents({ plan: activePlan, settings });
+    if (!routeCalendarEvents) {
+      showNotice({
+        kind: 'info',
+        title: '登録できる滞在予定がありません',
+        detail: '訪問先のあるルート案を計算してから再度お試しください。',
+      });
+      return;
+    }
+
+    setCalendarRegistrationStatus('auth');
+    try {
+      const accessToken = await requestGoogleCalendarAccessToken(GOOGLE_CALENDAR_CLIENT_ID);
+      setCalendarRegistrationStatus('registering');
+      const result = await syncRouteEventsToPrimaryCalendar({
+        accessToken,
+        workDate: routeCalendarEvents.workDate,
+        events: routeCalendarEvents.events,
+      });
+      const replacedDetail = result.replacedCount > 0
+        ? `前回のアプリ作成済み予定 ${result.replacedCount}件を置き換えました。`
+        : '前回分の置き換えはありませんでした。';
+      showNotice({
+        kind: 'success',
+        title: 'Googleカレンダーに登録しました',
+        detail: `${result.createdCount}件の現地滞在予定をメイン予定表に登録しました。${replacedDetail}`,
+      });
+    } catch (error) {
+      if (error instanceof GoogleCalendarAuthError) {
+        showNotice({
+          kind: 'error',
+          title: 'Googleカレンダーに接続できませんでした',
+          detail: error.message,
+        });
+      } else if (error instanceof GoogleCalendarPartialError) {
+        const cleanupDetail = error.failedCleanupCount > 0
+          ? `前回予定の削除失敗: ${error.failedCleanupCount}件。`
+          : '前回予定は残しています。';
+        showNotice({
+          kind: 'warning',
+          title: '一部だけ登録されました',
+          detail: `${error.createdCount}件の新しい予定を作成しました。${cleanupDetail}カレンダーを確認してください。`,
+        });
+      } else {
+        showNotice({
+          kind: 'error',
+          title: 'Googleカレンダーへの登録に失敗しました',
+          detail: error instanceof Error ? error.message : '時間を置いて再度お試しください。',
+        });
+      }
+    } finally {
+      setCalendarRegistrationStatus('idle');
+    }
+  };
   const selectPlan = (idx: number) => {
     setActivePlanIdx(idx);
     const ctx = optContextRef.current;
@@ -1494,7 +1779,7 @@ function MainApp() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">出発</span>
-                  <p className="text-sm font-medium num-font">{settings.startTime || '09:00'}</p>
+                  <p className="text-sm font-medium num-font">{settings.workDate || getTodayDateInputValue()} {settings.startTime || '09:00'}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-secondary font-bold uppercase tracking-wider w-12 shrink-0">終点</span>
@@ -2237,6 +2522,37 @@ function MainApp() {
                 >
                   <Navigation className="w-5 h-5" /> Google Maps でナビ開始
                 </button>
+                <button
+                  onClick={handleRegisterGoogleCalendar}
+                  disabled={!isGoogleCalendarReady || isRegisteringCalendar}
+                  title={isGoogleCalendarReady ? 'Googleカレンダーに一括登録' : 'GOOGLE_CALENDAR_CLIENT_ID が未設定です'}
+                  className={cn(
+                    "w-full py-3 rounded-xl font-extrabold text-sm border flex items-center justify-center gap-2 transition-colors active:scale-[0.98]",
+                    isGoogleCalendarReady
+                      ? "bg-emerald-600 hover:bg-emerald-500 border-emerald-400/40 text-white shadow-lg shadow-emerald-900/25"
+                      : "bg-slate-800 border-ui text-secondary cursor-not-allowed opacity-60"
+                  )}
+                >
+                  {isRegisteringCalendar ? (
+                    <div className="w-4 h-4 border-2 border-white/25 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <CalendarDays className="w-4 h-4" />
+                  )}
+                  {calendarRegistrationStatus === 'auth'
+                    ? 'Googleに接続中...'
+                    : calendarRegistrationStatus === 'registering'
+                      ? '予定を登録中...'
+                      : isGoogleCalendarReady
+                        ? 'Googleカレンダーに一括登録'
+                        : 'Google連携は未設定'}
+                </button>
+                <button
+                  onClick={handleExportCalendarIcs}
+                  className="w-full py-3 bg-slate-800 hover:bg-slate-700 rounded-xl font-bold text-xs border border-ui flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
+                >
+                  <CalendarDays className="w-4 h-4 text-blue-300" />
+                  Googleカレンダー用に1日分を書き出す
+                </button>
                 <button onClick={() => setActiveTab('input')} className="w-full py-2 text-[10px] text-secondary hover:text-white transition-colors uppercase font-bold tracking-widest">
                   条件編集に戻る
                 </button>
@@ -2332,12 +2648,13 @@ function MainApp() {
             <div className={cn(
               "rounded-xl border p-4 shadow-2xl backdrop-blur-md",
               notice.kind === 'error' ? 'bg-red-950/90 border-red-500/40' :
+              notice.kind === 'warning' ? 'bg-amber-950/90 border-amber-500/40' :
               notice.kind === 'success' ? 'bg-green-950/90 border-green-500/40' :
               'bg-slate-900/90 border-ui'
             )}>
               <div className="flex items-start gap-3">
                 <span className="text-lg leading-none mt-0.5">
-                  {notice.kind === 'error' ? '⚠️' : notice.kind === 'success' ? '✓' : 'ℹ️'}
+                  {notice.kind === 'error' ? '⚠️' : notice.kind === 'warning' ? '!' : notice.kind === 'success' ? '✓' : 'ℹ️'}
                 </span>
                 <div className="flex-1 min-w-0">
                   <h4 className="text-sm font-bold mb-0.5">{notice.title}</h4>
@@ -3247,6 +3564,7 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
 
 function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
   const [homeAddress, setHomeAddress] = useState(settings.homeAddress);
+  const [workDate, setWorkDate] = useState(settings.workDate || getTodayDateInputValue());
   const [startTime, setStartTime] = useState(settings.startTime || '09:00');
   const [endLocation, setEndLocation] = useState<'home' | 'none' | 'custom'>(settings.endLocation);
   const [customEndAddress, setCustomEndAddress] = useState(settings.customEndAddress || '');
@@ -3261,6 +3579,7 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
     const next: Settings = {
       ...settings,
       homeAddress: trimmedHomeAddress,
+      workDate,
       startTime,
       endLocation,
       customEndAddress: endLocation === 'custom' ? trimmedCustomEndAddress : settings.customEndAddress,
@@ -3291,7 +3610,7 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
       >
         <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
           <h2 className="text-sm font-bold text-white flex items-center gap-2">
-            <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・出発時刻
+            <MapPin className="w-4 h-4 text-blue-500" /> 起点・終点・日付時刻
           </h2>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
@@ -3313,6 +3632,17 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
           </div>
 
           {/* Departure time */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">作業日</label>
+            <input
+              type="date"
+              className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none num-font"
+              value={workDate}
+              onChange={(e) => setWorkDate(e.target.value)}
+            />
+            <p className="text-[10px] text-secondary mt-1">カレンダー書き出し時に、この日付で現地滞在予定を作成します。</p>
+          </div>
+
           <div>
             <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">出発時刻</label>
             <input

@@ -54,6 +54,10 @@ jobs:
           #   - APIs: Maps JS + Geocoding + Places + Routes
           #   - Daily quotas + billing budget alert
           GOOGLE_MAPS_PLATFORM_KEY: ${{ secrets.GOOGLE_MAPS_PLATFORM_KEY }}
+          # OAuth Web Client ID for Google Calendar registration. This is not a
+          # secret, but keep it in repository secrets so demo deployments can
+          # be configured without editing source files.
+          GOOGLE_CALENDAR_CLIENT_ID: ${{ secrets.GOOGLE_CALENDAR_CLIENT_ID }}
           # Gemini key is also exposed in the bundle (the demo password gate
           # is only a soft barrier). Use a dedicated key with:
           #   - Daily quota cap on the AI Studio side (e.g. 200/day)
