@@ -4080,10 +4080,27 @@ function SpeechInput({ onText }: { onText: (t: string) => void }) {
 
 type MapMode = 'admin' | 'standard' | 'satellite';
 
-const MAP_MODE_STORAGE_KEY = 'repair_map_mode';
+const MAP_MODE_STORAGE_KEY = 'repair_map_mode_v2';
 
-const MAP_MODE_CONFIG: Record<MapMode, { mapTypeId: string; colorScheme: 'DARK' | 'LIGHT'; label: string }> = {
-  admin:     { mapTypeId: 'roadmap', colorScheme: 'LIGHT', label: '行政区域' },
+const ADMIN_DISTRICT_MAP_STYLE: google.maps.MapTypeStyle[] = [
+  { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: '#cfd8e3' }, { weight: 1.1 }] },
+  { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#a6adb8' }] },
+  { featureType: 'administrative.neighborhood', elementType: 'labels.text.fill', stylers: [{ color: '#b4bbc6' }] },
+  { featureType: 'landscape', elementType: 'geometry', stylers: [{ color: '#f7f8fa' }] },
+  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#f4f6f8' }] },
+  { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#b8bec8' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#d8dde4' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#d5d8dd' }] },
+  { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#c6cbd3' }] },
+  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#a9b0bb' }] },
+  { featureType: 'transit', elementType: 'geometry', stylers: [{ color: '#e7eaee' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#dbeafe' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#aab8c8' }] },
+];
+
+const MAP_MODE_CONFIG: Record<MapMode, { mapTypeId: string; colorScheme: 'DARK' | 'LIGHT'; label: string; styles?: google.maps.MapTypeStyle[] }> = {
+  admin:     { mapTypeId: 'roadmap', colorScheme: 'LIGHT', label: '行政区域', styles: ADMIN_DISTRICT_MAP_STYLE },
   standard:  { mapTypeId: 'roadmap', colorScheme: 'DARK',  label: '標準' },
   satellite: { mapTypeId: 'hybrid',  colorScheme: 'DARK',  label: '航空写真' },
 };
@@ -4258,6 +4275,7 @@ function MapComponent({ plan, settings }: { plan: RoutePlan, settings: Settings 
         mapId="DEMO_MAP_ID"
         mapTypeId={modeCfg.mapTypeId}
         colorScheme={modeCfg.colorScheme}
+        styles={modeCfg.styles}
         disableDefaultUI
         internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
         className="w-full h-full"
