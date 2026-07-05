@@ -67,7 +67,7 @@ export type PlanId = 'A' | 'B' | 'C' | 'X';
 const PLAN_LABELS: Record<PlanId, string> = {
   A: '最短',
   B: '余裕',
-  C: '確実',
+  C: '短時間',
   X: 'カスタム',
 };
 
@@ -306,12 +306,12 @@ function generateHeuristicCandidates(
   add(nnRev);
   add(twoOptImprove(nnRev, matrix));
 
-  // 3. Easy-first seed (Plan C strategy: low difficulty → high difficulty)
-  const byDiff = indices.slice().sort((a, b) =>
-    (visits[a - 1]?.difficulty ?? 2) - (visits[b - 1]?.difficulty ?? 2)
+  // 3. Short-work-first seed (Plan C strategy: short jobs → long jobs)
+  const byShortWork = indices.slice().sort((a, b) =>
+    (visits[a - 1]?.workMinutes ?? 60) - (visits[b - 1]?.workMinutes ?? 60)
   );
-  add(byDiff);
-  add(twoOptImprove(byDiff, matrix));
+  add(byShortWork);
+  add(twoOptImprove(byShortWork, matrix));
 
   // 4. Earliest-deadline-first (favours time-window compliance)
   const byDeadline = indices.slice().sort((a, b) => {
@@ -376,19 +376,19 @@ export function optimizeRoutes(
     });
     const scoreB = plan.totalDurationMin * 0.3 + centeringDiff + penalty;
 
-    let difficultyOrderPenalty = 0;
-    let easyBeforeNoonBonus = 0;
+    let shortWorkOrderPenalty = 0;
+    let shortWorkBeforeNoonBonus = 0;
     plan.order.forEach((v, i) => {
       const remainingRank = visitCount - i;
-      difficultyOrderPenalty += v.difficulty * remainingRank * 5;
+      shortWorkOrderPenalty += v.workMinutes * remainingRank * 0.4;
       const leg = legByVisitId.get(v.id);
       if (!leg) return;
       const endTime = parseTime(leg.endTime);
-      if (v.difficulty === 1 && endTime <= 12 * 60) {
-        easyBeforeNoonBonus -= 20;
+      if (v.workMinutes <= 40 && endTime <= 12 * 60) {
+        shortWorkBeforeNoonBonus -= 20;
       }
     });
-    const scoreC = plan.totalDurationMin * 0.3 + difficultyOrderPenalty + easyBeforeNoonBonus + penalty;
+    const scoreC = plan.totalDurationMin * 0.3 + shortWorkOrderPenalty + shortWorkBeforeNoonBonus + penalty;
 
     return { p, scores: { A: scoreA, B: scoreB, C: scoreC } };
   });

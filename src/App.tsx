@@ -29,7 +29,6 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
-  Hash,
   ChevronRight,
   ClipboardList,
   Utensils,
@@ -67,7 +66,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
-const APP_VERSION = 'v1.4';
+const APP_VERSION = 'v1.5';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -209,6 +208,15 @@ function difficultyLabel(difficulty: Difficulty): string {
   return difficulty === 1 ? '低' : difficulty === 2 ? '中' : '高';
 }
 
+function difficultyBadgeStyle(difficulty: Difficulty): React.CSSProperties {
+  const color = difficultyColor(difficulty).work;
+  return {
+    background: `${color}22`,
+    borderColor: `${color}66`,
+    color,
+  };
+}
+
 function displayTaskName(task: Settings['tasks'][number]): string {
   if (!task.applianceCategory) return task.name;
   return task.name.replace(`${task.applianceCategory}:`, '').trim();
@@ -222,6 +230,21 @@ function taskOptionsForVisit(tasks: Settings['tasks'], visit: Pick<Visit, 'model
   const category = categoryForVisit(visit);
   if (!category) return tasks;
   return tasks.filter(task => task.applianceCategory === category);
+}
+
+function nextVisitForApplianceCategory(
+  visit: Visit,
+  applianceCategory: string | undefined,
+  tasks: Settings['tasks']
+): Partial<Visit> {
+  const nextOptions = taskOptionsForVisit(tasks, { applianceCategory, modelNumber: undefined });
+  const keepsTask = nextOptions.some(task => task.id === visit.taskId);
+  return {
+    applianceCategory,
+    modelNumber: undefined,
+    taskId: keepsTask ? visit.taskId : undefined,
+    ...(!keepsTask ? { workMinutes: 60 } : {}),
+  };
 }
 
 function normalizeLeg(raw: Partial<Leg> | undefined | null): Leg | null {
@@ -393,7 +416,6 @@ function buildVisitSignature(visits: Visit[]): string {
     id: v.id,
     address: v.address,
     phoneNumber: v.phoneNumber || '',
-    modelNumber: v.modelNumber || '',
     applianceCategory: v.applianceCategory || '',
     symptomName: v.symptomName || '',
     taskId: v.taskId || '',
@@ -937,7 +959,7 @@ function MainApp() {
       id: v.id,
       address: v.address || '',
       phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
-      modelNumber: typeof v.modelNumber === 'string' ? v.modelNumber : undefined,
+      modelNumber: undefined,
       applianceCategory: typeof v.applianceCategory === 'string' ? v.applianceCategory : undefined,
       symptomName: typeof v.symptomName === 'string' ? v.symptomName : undefined,
       taskId: v.taskId,
@@ -1377,7 +1399,7 @@ function MainApp() {
         id: Math.random().toString(36).substr(2, 9),
         address: typeof v.address === 'string' ? v.address : '',
         phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
-        modelNumber,
+        modelNumber: undefined,
         applianceCategory,
         symptomName,
         taskId: task?.id,
@@ -1891,15 +1913,34 @@ function MainApp() {
                 <div
                   key={visit.id}
                   className={cn(
-                    "bg-card p-4 rounded-xl border relative group transition-all hover:border-blue-500/30",
+                    "bg-card p-4 rounded-xl border relative group transition-all hover:border-blue-500/30 overflow-hidden",
                     hasErrors ? "border-red-500/50" : hasWarnings ? "border-yellow-500/30" : "border-ui"
                   )}
                 >
+                  <div
+                    className="absolute left-0 top-0 w-1 h-full"
+                    style={{ background: difficultyColor(visit.difficulty).work }}
+                  />
                   <div className="flex justify-between items-start mb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-6 h-6 rounded-md bg-slate-800 border border-ui flex items-center justify-center text-[10px] font-bold text-blue-400">
+                    <div className="min-w-0 flex-1 pr-2">
+                      <div className="flex items-center gap-2 mb-2">
+                      <span
+                        className="w-6 h-6 rounded-md border flex items-center justify-center text-[10px] font-bold text-white"
+                        style={{
+                          background: difficultyColor(visit.difficulty).work,
+                          borderColor: difficultyColor(visit.difficulty).work,
+                        }}
+                      >
                         {idx + 1}
                       </span>
+                        <ApplianceCategoryToggle
+                          value={visit.applianceCategory}
+                          onChange={(applianceCategory) => handleUpdateVisit(
+                            visit.id,
+                            nextVisitForApplianceCategory(visit, applianceCategory, settings.tasks)
+                          )}
+                        />
+                      </div>
                       <select 
                         className="bg-transparent border-none text-sm font-bold focus:ring-0 w-full appearance-none cursor-pointer"
                         value={visit.taskId || ''}
@@ -1925,63 +1966,6 @@ function MainApp() {
                         <Trash2 className="w-4 h-4 text-secondary hover:text-red-400" />
                       </button>
                     </div>
-                  </div>
-                  
-                  {(visit.modelNumber || visit.applianceCategory || visit.symptomName) && (
-                    <div className="mb-3 flex flex-wrap gap-1.5">
-                      {visit.modelNumber && <Badge>型番 {visit.modelNumber}</Badge>}
-                      {visit.applianceCategory && <Badge>{visit.applianceCategory}</Badge>}
-                      {visit.symptomName && <Badge>{visit.symptomName}</Badge>}
-                    </div>
-                  )}
-
-                  <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <label className="block">
-                      <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-1.5">
-                        <Hash className="w-3.5 h-3.5" /> 型番
-                      </span>
-                      <input
-                        className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                        placeholder="MSZ / MR..."
-                        value={visit.modelNumber || ''}
-                        onChange={(e) => {
-                          const modelNumber = e.target.value.toUpperCase();
-                          const applianceCategory = inferApplianceCategoryFromModel(modelNumber);
-                          const nextOptions = taskOptionsForVisit(settings.tasks, { modelNumber, applianceCategory });
-                          const keepsTask = nextOptions.some(task => task.id === visit.taskId);
-                          handleUpdateVisit(visit.id, {
-                            modelNumber,
-                            applianceCategory,
-                            taskId: keepsTask ? visit.taskId : undefined,
-                            ...(!keepsTask ? { workMinutes: 60 } : {}),
-                          });
-                        }}
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-1.5">
-                        <Layers className="w-3.5 h-3.5" /> 機種
-                      </span>
-                      <select
-                        className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                        value={visit.applianceCategory || ''}
-                        onChange={(e) => {
-                          const applianceCategory = e.target.value || undefined;
-                          const nextOptions = taskOptionsForVisit(settings.tasks, { modelNumber: visit.modelNumber, applianceCategory });
-                          const keepsTask = nextOptions.some(task => task.id === visit.taskId);
-                          handleUpdateVisit(visit.id, {
-                            applianceCategory,
-                            taskId: keepsTask ? visit.taskId : undefined,
-                            ...(!keepsTask ? { workMinutes: 60 } : {}),
-                          });
-                        }}
-                      >
-                        <option value="" className="bg-[#1A1D23]">未判定</option>
-                        {APPLIANCE_CATEGORIES.map(category => (
-                          <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>
-                        ))}
-                      </select>
-                    </label>
                   </div>
 
                   <div className="relative mb-3">
@@ -2046,7 +2030,10 @@ function MainApp() {
                         <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">
                           滞在予定（作業時間）
                         </span>
-                        <span className="text-xs font-bold text-white">
+                        <span
+                          className="text-xs font-bold rounded-full border px-2 py-1"
+                          style={difficultyBadgeStyle(visit.difficulty)}
+                        >
                           {visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}
                         </span>
                      </div>
@@ -3182,7 +3169,7 @@ function ParsedVisitsReviewModal({
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <ClipboardList className="w-4 h-4 text-blue-400" /> 読み取り結果の確認
             </h2>
-            <p className="text-[11px] text-secondary mt-1">型番・機種・作業・住所・電話番号・時間を確認して追加します。</p>
+            <p className="text-[11px] text-secondary mt-1">機種・作業・住所・電話番号・時間を確認して追加します。</p>
           </div>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
@@ -3195,12 +3182,22 @@ function ParsedVisitsReviewModal({
             const taskOptions = taskOptionsForVisit(tasks, visit);
             return (
               <div key={visit.id} className={cn(
-                "rounded-xl border p-3 bg-slate-900/35",
+                "rounded-xl border p-3 bg-slate-900/35 relative overflow-hidden",
                 missingAddress ? "border-red-500/50" : "border-ui"
               )}>
+                <div
+                  className="absolute left-0 top-0 w-1 h-full"
+                  style={{ background: difficultyColor(visit.difficulty).work }}
+                />
                 <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="flex items-center gap-2">
-                    <span className="w-6 h-6 rounded-md bg-slate-800 border border-ui flex items-center justify-center text-[10px] font-bold text-blue-400">
+                    <span
+                      className="w-6 h-6 rounded-md border flex items-center justify-center text-[10px] font-bold text-white"
+                      style={{
+                        background: difficultyColor(visit.difficulty).work,
+                        borderColor: difficultyColor(visit.difficulty).work,
+                      }}
+                    >
                       {idx + 1}
                     </span>
                     <span className="text-xs font-bold text-gray-200">訪問先候補</span>
@@ -3214,18 +3211,23 @@ function ParsedVisitsReviewModal({
                   </button>
                 </div>
 
-                {(visit.modelNumber || visit.applianceCategory || visit.symptomName) && (
-                  <div className="mb-3 flex flex-wrap gap-1.5">
-                    {visit.modelNumber && <Badge>型番 {visit.modelNumber}</Badge>}
-                    {visit.applianceCategory && <Badge>{visit.applianceCategory}</Badge>}
-                    {visit.symptomName && <Badge>{visit.symptomName}</Badge>}
-                    {!visit.taskId && (
-                      <Badge variant="warning">作業は手動選択</Badge>
+                <div className="mb-3">
+                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                    <Layers className="w-3.5 h-3.5" /> 機種
+                  </span>
+                  <ApplianceCategoryToggle
+                    value={visit.applianceCategory}
+                    onChange={(applianceCategory) => updateVisit(
+                      visit.id,
+                      nextVisitForApplianceCategory(visit, applianceCategory, tasks)
                     )}
-                  </div>
-                )}
+                  />
+                  {!visit.taskId && (
+                    <p className="text-[10px] text-yellow-300 font-bold mt-2">作業は手動選択してください</p>
+                  )}
+                </div>
 
-                <div className="mb-3 flex gap-2">
+                <div className="mb-3">
                   <label className="flex-1 block">
                     <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
                       <ClipboardList className="w-3.5 h-3.5" /> 作業
@@ -3249,55 +3251,6 @@ function ParsedVisitsReviewModal({
                         <option key={task.id} value={task.id} className="bg-[#1A1D23]">
                           {displayTaskName(task)}
                         </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <label className="block">
-                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                      <Hash className="w-3.5 h-3.5" /> 型番
-                    </span>
-                    <input
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      placeholder="MSZ / MR..."
-                      value={visit.modelNumber || ''}
-                      onChange={(e) => {
-                        const modelNumber = e.target.value.toUpperCase();
-                        const applianceCategory = inferApplianceCategoryFromModel(modelNumber);
-                        const nextOptions = taskOptionsForVisit(tasks, { modelNumber, applianceCategory });
-                        const keepsTask = nextOptions.some(task => task.id === visit.taskId);
-                        updateVisit(visit.id, {
-                          modelNumber,
-                          applianceCategory,
-                          taskId: keepsTask ? visit.taskId : undefined,
-                          ...(!keepsTask ? { workMinutes: 60 } : {}),
-                        });
-                      }}
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                      <Layers className="w-3.5 h-3.5" /> 機種
-                    </span>
-                    <select
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      value={visit.applianceCategory || ''}
-                      onChange={(e) => {
-                        const applianceCategory = e.target.value || undefined;
-                        const nextOptions = taskOptionsForVisit(tasks, { modelNumber: visit.modelNumber, applianceCategory });
-                        const keepsTask = nextOptions.some(task => task.id === visit.taskId);
-                        updateVisit(visit.id, {
-                          applianceCategory,
-                          taskId: keepsTask ? visit.taskId : undefined,
-                          ...(!keepsTask ? { workMinutes: 60 } : {}),
-                        });
-                      }}
-                    >
-                      <option value="" className="bg-[#1A1D23]">未判定</option>
-                      {APPLIANCE_CATEGORIES.map(category => (
-                        <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>
                       ))}
                     </select>
                   </label>
@@ -3355,7 +3308,12 @@ function ParsedVisitsReviewModal({
                   </div>
                   <div className="bg-slate-800/50 p-2.5 rounded border border-ui flex flex-col gap-2 justify-between">
                     <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">予定</span>
-                    <span className="text-xs font-bold text-white">{visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}</span>
+                    <span
+                      className="text-xs font-bold rounded-full border px-2 py-1"
+                      style={difficultyBadgeStyle(visit.difficulty)}
+                    >
+                      {visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -3549,6 +3507,39 @@ function UpgradeModal({ reason, onClose, onUpgrade }: { reason: string; onClose:
 }
 
 // Sub-components
+function ApplianceCategoryToggle({
+  value,
+  onChange,
+  className,
+}: {
+  value?: string;
+  onChange: (value: string | undefined) => void;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex items-center gap-1.5", className)}>
+      {APPLIANCE_CATEGORIES.map(category => {
+        const selected = value === category;
+        return (
+          <button
+            key={category}
+            type="button"
+            onClick={() => onChange(selected ? undefined : category)}
+            className={cn(
+              "px-2.5 py-1.5 rounded-full border text-[11px] font-bold transition-colors",
+              selected
+                ? "bg-blue-500/20 border-blue-400/60 text-blue-100"
+                : "bg-slate-900/70 border-ui text-secondary hover:text-white hover:border-blue-500/40"
+            )}
+          >
+            {category}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: 'ok' | 'warning' | 'violation' }) {
   if (status === 'ok') return <Badge variant="success" className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> OK</Badge>;
   if (status === 'warning') return <Badge variant="warning" className="flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> ギリギリ</Badge>;
