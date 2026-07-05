@@ -9,6 +9,9 @@ export type Visit = {
   id: string;
   address: string;
   phoneNumber?: string;
+  modelNumber?: string;
+  applianceCategory?: string;
+  symptomName?: string;
   taskId?: string;
   timeWindow?: TimeWindow;
   workMinutes: number; // default 60
@@ -33,6 +36,9 @@ export type TaskType = {
   id: string;
   name: string;
   defaultMinutes: number;
+  applianceCategory?: string;
+  majorCategory?: string;
+  source?: 'symptom-master' | 'manual' | 'legacy';
 };
 
 export type Settings = {

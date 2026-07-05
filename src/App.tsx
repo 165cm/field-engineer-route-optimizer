@@ -53,6 +53,7 @@ import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } fr
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 import { ScheduleClock } from './components/ScheduleClock';
 import { difficultyColor } from './lib/visitColors';
+import { ensureDefaultRepairTasks, inferApplianceCategoryFromModel, selectRepairTask } from './lib/repairTasks';
 import {
   GoogleCalendarAuthError,
   GoogleCalendarPartialError,
@@ -164,6 +165,7 @@ const TIME_OPTIONS = Array.from({ length: 25 }).map((_, i) => {
   const m = i % 2 === 0 ? '00' : '30';
   return `${h.toString().padStart(2, '0')}:${m}`;
 });
+const WORK_MINUTE_OPTIONS = [20, 40, 60, 80, 100, 120];
 
 type PlanScore = {
   idx: number;
@@ -358,6 +360,9 @@ function buildVisitSignature(visits: Visit[]): string {
     id: v.id,
     address: v.address,
     phoneNumber: v.phoneNumber || '',
+    modelNumber: v.modelNumber || '',
+    applianceCategory: v.applianceCategory || '',
+    symptomName: v.symptomName || '',
     taskId: v.taskId || '',
     timeWindow: v.timeWindow || null,
     workMinutes: v.workMinutes,
@@ -883,11 +888,11 @@ function MainApp() {
       workDate: typeof parsed.workDate === 'string' ? parsed.workDate : getTodayDateInputValue(),
       startTime: parsed.startTime || '09:00',
       lunchBreakMinutes: [0, 15, 30, 45, 60].includes(parsedLunchBreak) ? parsedLunchBreak : 0,
-      tasks: parsed.tasks || [
+      tasks: ensureDefaultRepairTasks(parsed.tasks || [
         { id: '1', name: '点検', defaultMinutes: 30 },
         { id: '2', name: '修理', defaultMinutes: 60 },
         { id: '3', name: '設置', defaultMinutes: 90 },
-      ]
+      ])
     };
   });
   
@@ -899,6 +904,9 @@ function MainApp() {
       id: v.id,
       address: v.address || '',
       phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
+      modelNumber: typeof v.modelNumber === 'string' ? v.modelNumber : undefined,
+      applianceCategory: typeof v.applianceCategory === 'string' ? v.applianceCategory : undefined,
+      symptomName: typeof v.symptomName === 'string' ? v.symptomName : undefined,
       taskId: v.taskId,
       timeWindow: v.timeWindow,
       workMinutes: Number(v.workMinutes) || 60,
@@ -1310,14 +1318,33 @@ function MainApp() {
   };
 
   const normalizeParsedVisits = (data: any[]): Visit[] => {
-    return data.map((v: any) => ({
-      id: Math.random().toString(36).substr(2, 9),
-      address: typeof v.address === 'string' ? v.address : '',
-      phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
-      workMinutes: 60,
-      difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
-      timeWindow: v.startTime || v.endTime ? { start: v.startTime || '', end: v.endTime || '' } : undefined,
-    }));
+    return data.map((v: any) => {
+      const modelNumber = typeof v.modelNumber === 'string' && v.modelNumber.trim()
+        ? v.modelNumber.trim().toUpperCase()
+        : undefined;
+      const applianceCategory = (
+        typeof v.applianceCategory === 'string' && ['エアコン', '冷蔵庫'].includes(v.applianceCategory)
+          ? v.applianceCategory
+          : inferApplianceCategoryFromModel(modelNumber)
+      );
+      const symptomName = typeof v.symptomName === 'string' && v.symptomName.trim()
+        ? v.symptomName.trim()
+        : undefined;
+      const task = selectRepairTask(settings.tasks, { modelNumber, applianceCategory, symptomName });
+
+      return {
+        id: Math.random().toString(36).substr(2, 9),
+        address: typeof v.address === 'string' ? v.address : '',
+        phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
+        modelNumber,
+        applianceCategory,
+        symptomName,
+        taskId: task?.id,
+        workMinutes: task?.defaultMinutes || 60,
+        difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
+        timeWindow: v.startTime || v.endTime ? { start: v.startTime || '', end: v.endTime || '' } : undefined,
+      };
+    });
   };
 
   const stageParsedVisits = (data: any[], sourceLabel: 'text' | 'image') => {
@@ -1860,6 +1887,14 @@ function MainApp() {
                     </div>
                   </div>
                   
+                  {(visit.modelNumber || visit.applianceCategory || visit.symptomName) && (
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                      {visit.modelNumber && <Badge>型番 {visit.modelNumber}</Badge>}
+                      {visit.applianceCategory && <Badge>{visit.applianceCategory}</Badge>}
+                      {visit.symptomName && <Badge>{visit.symptomName}</Badge>}
+                    </div>
+                  )}
+
                   <div className="relative mb-3">
                     <textarea
                       className="w-full bg-[#1A1D23] border border-ui rounded-lg p-3 pr-11 text-xs resize-none focus:border-blue-500/50 transition-colors"
@@ -1927,12 +1962,9 @@ function MainApp() {
                           value={visit.workMinutes}
                           onChange={(e) => handleUpdateVisit(visit.id, { workMinutes: Number(e.target.value) })}
                         >
-                          <option value={30}>30分</option>
-                          <option value={60}>60分</option>
-                          <option value={90}>90分</option>
-                          <option value={120}>120分</option>
-                          <option value={150}>150分</option>
-                          <option value={180}>180分</option>
+                          {WORK_MINUTE_OPTIONS.map(minutes => (
+                            <option key={minutes} value={minutes}>{minutes}分</option>
+                          ))}
                         </select>
                      </div>
                   </div>
@@ -3074,6 +3106,17 @@ function ParsedVisitsReviewModal({
                   </button>
                 </div>
 
+                {(visit.modelNumber || visit.applianceCategory || visit.symptomName) && (
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    {visit.modelNumber && <Badge>型番 {visit.modelNumber}</Badge>}
+                    {visit.applianceCategory && <Badge>{visit.applianceCategory}</Badge>}
+                    {visit.symptomName && <Badge>{visit.symptomName}</Badge>}
+                    {!visit.taskId && (
+                      <Badge variant="warning">作業は手動選択</Badge>
+                    )}
+                  </div>
+                )}
+
                 <div className="mb-3 flex gap-2">
                   <label className="flex-1 block">
                     <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
@@ -3108,12 +3151,9 @@ function ParsedVisitsReviewModal({
                       value={visit.workMinutes}
                       onChange={(e) => updateVisit(visit.id, { workMinutes: Number(e.target.value) })}
                     >
-                      <option value={30}>30分</option>
-                      <option value={60}>60分</option>
-                      <option value={90}>90分</option>
-                      <option value={120}>120分</option>
-                      <option value={150}>150分</option>
-                      <option value={180}>180分</option>
+                      {WORK_MINUTE_OPTIONS.map(minutes => (
+                        <option key={minutes} value={minutes}>{minutes}分</option>
+                      ))}
                     </select>
                   </label>
                 </div>
@@ -3424,7 +3464,7 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
 
   const handleAdd = () => {
     if (!newName.trim()) return;
-    setTasks([...tasks, { id: Date.now().toString(), name: newName.trim(), defaultMinutes: parseInt(newMinutes) || 60 }]);
+    setTasks([...tasks, { id: Date.now().toString(), name: newName.trim(), defaultMinutes: parseInt(newMinutes) || 60, source: 'manual' }]);
     setNewName('');
     setNewMinutes('60');
   };
