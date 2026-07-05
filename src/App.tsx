@@ -38,8 +38,28 @@ import {
   Phone,
   Copy,
   Pencil,
-  Check
+  Check,
+  Pin as PinIcon,
+  PinOff as PinOffIcon,
+  GripVertical,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  verticalListSortingStrategy,
+  useSortable,
+  arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, Leg } from './types';
@@ -66,7 +86,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
-const APP_VERSION = 'v1.5';
+const APP_VERSION = 'v1.6';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -306,6 +326,9 @@ type VisitHistoryEntry = {
   phoneNumber?: string;
   firstSeenAt: string;
   lastSeenAt: string;
+  // Pinned entries surface in the お気に入り section and survive the
+  // 300-entry trim regardless of recency.
+  pinned?: boolean;
 };
 
 function orderRoutePlans(plans: RoutePlan[]): RoutePlan[] {
@@ -333,6 +356,60 @@ function normalizeHistoryAddress(value: string): string {
   return value.replace(/\s+/g, '').trim().toLowerCase();
 }
 
+// Geocode failures during optimization carry which point failed so the UI can
+// point the user at the exact visit/setting instead of a generic error.
+class GeocodeVisitError extends Error {
+  constructor(
+    public visitId: string,
+    public visitIndex: number,
+    public address: string,
+    public cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'GeocodeVisitError';
+  }
+}
+
+class GeocodePointError extends Error {
+  constructor(
+    public pointLabel: string,
+    public address: string,
+    public cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'GeocodePointError';
+  }
+}
+
+function isAddressNotFoundError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /ZERO_RESULTS|NOT_FOUND|404/i.test(msg);
+}
+
+// Sortable wrapper for a route card in the custom ("カスタム") plan. Exposes
+// the drag-handle props via a render prop so only the grip icon starts a drag
+// (the rest of the card keeps its buttons/links usable).
+function SortableRouteVisit({
+  id,
+  children,
+}: {
+  id: string;
+  children: (dragHandle: { props: Record<string, unknown>; isDragging: boolean }) => React.ReactNode;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    position: 'relative',
+    zIndex: isDragging ? 30 : undefined,
+  };
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({ props: { ...attributes, ...listeners }, isDragging })}
+    </div>
+  );
+}
+
 function readVisitHistory(): VisitHistoryEntry[] {
   try {
     const raw = localStorage.getItem(VISIT_HISTORY_STORAGE_KEY);
@@ -352,6 +429,7 @@ function readVisitHistory(): VisitHistoryEntry[] {
             : undefined,
           firstSeenAt: typeof item.firstSeenAt === 'string' ? item.firstSeenAt : lastSeenAt,
           lastSeenAt,
+          pinned: item.pinned === true || undefined,
         };
       })
       .filter((item): item is VisitHistoryEntry => item !== null);
@@ -361,10 +439,44 @@ function readVisitHistory(): VisitHistoryEntry[] {
   }
 }
 
+const VISIT_HISTORY_LIMIT = 300;
+
+// Trim to the limit while never dropping pinned entries.
+function trimVisitHistory(history: VisitHistoryEntry[]): VisitHistoryEntry[] {
+  if (history.length <= VISIT_HISTORY_LIMIT) return history;
+  const pinned = history.filter(item => item.pinned);
+  const rest = history
+    .filter(item => !item.pinned)
+    .slice(0, Math.max(0, VISIT_HISTORY_LIMIT - pinned.length));
+  return history.filter(item => item.pinned || rest.includes(item));
+}
+
 function writeVisitHistory(history: VisitHistoryEntry[]) {
   try {
-    localStorage.setItem(VISIT_HISTORY_STORAGE_KEY, JSON.stringify(history.slice(0, 300)));
+    localStorage.setItem(VISIT_HISTORY_STORAGE_KEY, JSON.stringify(trimVisitHistory(history)));
   } catch {}
+}
+
+// History-backed address suggestions for the visit address field. Pinned
+// entries rank first, then most recently seen. Purely client-side — no
+// Places API cost.
+function buildAddressSuggestions(
+  history: VisitHistoryEntry[],
+  input: string,
+  limit = 5,
+): VisitHistoryEntry[] {
+  const query = normalizeHistoryAddress(input);
+  if (query.length < 2) return [];
+  return history
+    .filter(item => {
+      const key = normalizeHistoryAddress(item.address);
+      return key !== query && key.includes(query);
+    })
+    .sort((a, b) =>
+      Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) ||
+      b.lastSeenAt.localeCompare(a.lastSeenAt)
+    )
+    .slice(0, limit);
 }
 
 function upsertVisitHistory(history: VisitHistoryEntry[], visits: Visit[]): VisitHistoryEntry[] {
@@ -406,9 +518,10 @@ function upsertVisitHistory(history: VisitHistoryEntry[], visits: Visit[]): Visi
   });
 
   if (!changed) return history;
-  return Array.from(byAddress.values())
-    .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
-    .slice(0, 300);
+  return trimVisitHistory(
+    Array.from(byAddress.values())
+      .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+  );
 }
 
 function buildVisitSignature(visits: Visit[]): string {
@@ -1014,6 +1127,23 @@ function MainApp() {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
+  // Mobile-only: whether the in-sidebar map is expanded. Collapsing frees
+  // vertical space for the timeline; the choice persists across sessions.
+  const [showMobileMap, setShowMobileMap] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('repair_mobile_map_open_v1') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const toggleMobileMap = () => {
+    setShowMobileMap(prev => {
+      const next = !prev;
+      try { localStorage.setItem('repair_mobile_map_open_v1', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  };
+
   // Recompute the custom plan when its order changes. Falls back to a no-op
   // if optimization context hasn't been captured yet.
   const recomputeCustomPlan = (nextOrder: string[]) => {
@@ -1048,6 +1178,22 @@ function MainApp() {
     if (swapWith < 0 || swapWith >= customOrder.length) return;
     const next = customOrder.slice();
     [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+    setCustomOrder(next);
+    recomputeCustomPlan(next);
+  };
+
+  // Drag & drop reordering for the custom plan. The distance constraint keeps
+  // taps/scrolls from starting an accidental drag on touch screens.
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
+  );
+  const handleCustomDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = customOrder.indexOf(String(active.id));
+    const newIndex = customOrder.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+    const next = arrayMove<string>(customOrder, oldIndex, newIndex);
     setCustomOrder(next);
     recomputeCustomPlan(next);
   };
@@ -1087,6 +1233,10 @@ function MainApp() {
     title: string;
     detail?: string;
     onRetry?: () => void;
+    // Optional generic action button (e.g. undo after a delete).
+    action?: { label: string; run: () => void };
+    // Overrides the default auto-dismiss delay for non-error notices.
+    durationMs?: number;
   };
   const [notice, setNotice] = useState<Notice | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1095,7 +1245,7 @@ function MainApp() {
     noticeTimerRef.current = null;
     setNotice(n);
     if (n.kind !== 'error') {
-      const delay = n.kind === 'success' ? 3000 : 5000;
+      const delay = n.durationMs ?? (n.kind === 'success' ? 3000 : 5000);
       noticeTimerRef.current = setTimeout(() => {
         setNotice(null);
         noticeTimerRef.current = null;
@@ -1106,6 +1256,59 @@ function MainApp() {
     if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
     noticeTimerRef.current = null;
     setNotice(null);
+  };
+
+  // Per-visit address pre-check (runs on blur so bad addresses surface before
+  // route calculation). Keyed by visit id; cache keyed by normalized address
+  // so the same string is never re-checked against the API in one session.
+  const [addressChecks, setAddressChecks] = useState<Record<string, 'checking' | 'ok' | 'failed'>>({});
+  const [geocodeFailedVisitId, setGeocodeFailedVisitId] = useState<string | null>(null);
+  const addressCheckCacheRef = useRef<globalThis.Map<string, boolean>>(new globalThis.Map());
+  // Visit id whose address field currently shows history-based suggestions.
+  const [addressSuggestFor, setAddressSuggestFor] = useState<string | null>(null);
+
+  const clearAddressCheck = (visitId: string) => {
+    setAddressChecks(prev => {
+      if (!(visitId in prev)) return prev;
+      const next = { ...prev };
+      delete next[visitId];
+      return next;
+    });
+    setGeocodeFailedVisitId(prev => (prev === visitId ? null : prev));
+  };
+
+  const handleAddressBlur = async (visitId: string, rawAddress: string) => {
+    const address = rawAddress.trim();
+    if (!address) {
+      clearAddressCheck(visitId);
+      return;
+    }
+    const key = address.replace(/\s+/g, ' ');
+    const cached = addressCheckCacheRef.current.get(key);
+    if (cached !== undefined) {
+      setAddressChecks(prev => ({ ...prev, [visitId]: cached ? 'ok' : 'failed' }));
+      if (cached) setGeocodeFailedVisitId(prev => (prev === visitId ? null : prev));
+      return;
+    }
+    setAddressChecks(prev => ({ ...prev, [visitId]: 'checking' }));
+    try {
+      const coords = await geocodeAddress(address);
+      addressCheckCacheRef.current.set(key, true);
+      // Store the resolved coords so optimization skips re-geocoding.
+      setVisits(prev => prev.map(v => (
+        v.id === visitId && v.address.trim() === address ? { ...v, coords } : v
+      )));
+      setAddressChecks(prev => ({ ...prev, [visitId]: 'ok' }));
+      setGeocodeFailedVisitId(prev => (prev === visitId ? null : prev));
+    } catch (error) {
+      if (isAddressNotFoundError(error)) {
+        addressCheckCacheRef.current.set(key, false);
+        setAddressChecks(prev => ({ ...prev, [visitId]: 'failed' }));
+      } else {
+        // Network/quota errors are not the user's fault — don't flag the visit.
+        clearAddressCheck(visitId);
+      }
+    }
   };
 
   const handleLoadSampleAndOptimize = () => {
@@ -1290,14 +1493,57 @@ function MainApp() {
   };
 
   const handleDeleteVisitHistory = (id: string) => {
+    const index = visitHistory.findIndex(item => item.id === id);
+    if (index < 0) return;
+    const removed = visitHistory[index];
+    const next = visitHistory.filter(item => item.id !== id);
+    setVisitHistory(next);
+    writeVisitHistory(next);
+    showNotice({
+      kind: 'info',
+      title: '履歴を削除しました',
+      detail: removed.address,
+      durationMs: 8000,
+      action: {
+        label: '元に戻す',
+        run: () => {
+          setVisitHistory(cur => {
+            if (cur.some(item => item.id === removed.id)) return cur;
+            const restored = cur.slice();
+            restored.splice(Math.min(index, restored.length), 0, removed);
+            writeVisitHistory(restored);
+            return restored;
+          });
+        },
+      },
+    });
+  };
+
+  const handleToggleVisitHistoryPin = (id: string) => {
     setVisitHistory(prev => {
-      const next = prev.filter(item => item.id !== id);
+      const next = prev.map(item => (item.id === id ? { ...item, pinned: !item.pinned } : item));
       writeVisitHistory(next);
       return next;
     });
   };
 
+  const applyAddressSuggestion = (visitId: string, entry: VisitHistoryEntry) => {
+    clearAddressCheck(visitId);
+    setVisits(prev => prev.map(v => (v.id === visitId ? {
+      ...v,
+      address: entry.address,
+      phoneNumber: v.phoneNumber?.trim() ? v.phoneNumber : entry.phoneNumber,
+      coords: undefined,
+    } : v)));
+    setAddressSuggestFor(null);
+    void handleAddressBlur(visitId, entry.address);
+  };
+
   const handleUpdateVisit = (id: string, updates: Partial<Visit>) => {
+    if (updates.address !== undefined) {
+      // Editing the address invalidates any previous pre-check result.
+      clearAddressCheck(id);
+    }
     setVisits(visits.map(v => {
       if (v.id !== id) return v;
       const next = { ...v, ...updates };
@@ -1318,7 +1564,44 @@ function MainApp() {
   };
 
   const handleDeleteVisit = (id: string) => {
+    const index = visits.findIndex(v => v.id === id);
+    if (index < 0) return;
+    const removed = visits[index];
     setVisits(visits.filter(v => v.id !== id));
+    showNotice({
+      kind: 'info',
+      title: '訪問先を削除しました',
+      detail: removed.address.trim() || '（住所未入力）',
+      durationMs: 8000,
+      action: {
+        label: '元に戻す',
+        run: () => {
+          setVisits(prev => {
+            if (prev.some(v => v.id === removed.id)) return prev;
+            const restored = prev.slice();
+            restored.splice(Math.min(index, restored.length), 0, removed);
+            return restored;
+          });
+        },
+      },
+    });
+  };
+
+  const handleResetVisits = () => {
+    if (visits.length === 0) return;
+    const removedAll = visits;
+    setVisits([]);
+    showNotice({
+      kind: 'info',
+      title: `訪問先${removedAll.length}件をリセットしました`,
+      durationMs: 8000,
+      action: {
+        label: '元に戻す',
+        run: () => {
+          setVisits(prev => (prev.length === 0 ? removedAll : prev));
+        },
+      },
+    });
   };
 
   const parseHHMM = (value?: string): number | null => {
@@ -1528,23 +1811,35 @@ function MainApp() {
         updatedSettings.homeCoords = startOverride;
         updatedSettings.homeAddress = `現在地 (${startOverride.lat.toFixed(4)}, ${startOverride.lng.toFixed(4)})`;
       } else if (!updatedSettings.homeCoords) {
-        updatedSettings.homeCoords = await geocodeAddress(updatedSettings.homeAddress);
+        try {
+          updatedSettings.homeCoords = await geocodeAddress(updatedSettings.homeAddress);
+        } catch (error) {
+          throw new GeocodePointError('起点', updatedSettings.homeAddress, error);
+        }
       }
       if (updatedSettings.endLocation === 'custom' && updatedSettings.customEndAddress && !updatedSettings.customEndCoords) {
-        updatedSettings.customEndCoords = await geocodeAddress(updatedSettings.customEndAddress);
+        try {
+          updatedSettings.customEndCoords = await geocodeAddress(updatedSettings.customEndAddress);
+        } catch (error) {
+          throw new GeocodePointError('終点', updatedSettings.customEndAddress, error);
+        }
       }
       setSettings(updatedSettings);
 
       // Reuse cached coords as long as the address hasn't changed.
       // geocodeAddress also has its own localStorage TTL cache,
       // so repeated optimizations on the same set incur zero network cost.
-      const updatedVisits = await Promise.all(visits.map(async v => {
+      const updatedVisits = await Promise.all(visits.map(async (v, idx) => {
         if (v.coords && v.address) {
           return v;
         }
         if (!v.address) return v;
-        const coords = await geocodeAddress(v.address);
-        return { ...v, coords };
+        try {
+          const coords = await geocodeAddress(v.address);
+          return { ...v, coords };
+        } catch (error) {
+          throw new GeocodeVisitError(v.id, idx, v.address, error);
+        }
       }));
       setVisits(updatedVisits);
 
@@ -1596,10 +1891,43 @@ function MainApp() {
         activePlanIdx: 0,
       });
       setCompletedVisitIds(new Set());
+      setGeocodeFailedVisitId(null);
       setActiveTab('result');
       setActivePlanIdx(0);
     } catch (error) {
       console.error(error);
+      if (error instanceof GeocodeVisitError) {
+        // Point at the exact visit: switch back to the input tab, flag the
+        // card, and scroll it into view.
+        setActiveTab('input');
+        setGeocodeFailedVisitId(error.visitId);
+        setAddressChecks(prev => ({ ...prev, [error.visitId]: 'failed' }));
+        showNotice({
+          kind: 'error',
+          title: `訪問先${error.visitIndex + 1}の住所を特定できませんでした`,
+          detail: isAddressNotFoundError(error.cause)
+            ? `「${error.address}」が地図で見つかりませんでした。番地まで含めて修正してください。`
+            : explainError(error.cause, 'ルート計算に失敗しました').detail,
+          onRetry: () => handleOptimize(),
+        });
+        window.setTimeout(() => {
+          document.getElementById(`visit-card-${error.visitId}`)
+            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 150);
+        return;
+      }
+      if (error instanceof GeocodePointError) {
+        setActiveTab('input');
+        showNotice({
+          kind: 'error',
+          title: `${error.pointLabel}の住所を特定できませんでした`,
+          detail: isAddressNotFoundError(error.cause)
+            ? `「${error.address}」が地図で見つかりませんでした。番地まで含めて修正してください。`
+            : explainError(error.cause, 'ルート計算に失敗しました').detail,
+          onRetry: () => handleOptimize(),
+        });
+        return;
+      }
       const { title, detail } = explainError(error, 'ルート計算に失敗しました');
       showNotice({ kind: 'error', title, detail, onRetry: () => handleOptimize() });
     } finally {
@@ -1838,6 +2166,7 @@ function MainApp() {
               history={visitHistory}
               onAdd={handleAddVisitFromHistory}
               onDelete={handleDeleteVisitHistory}
+              onTogglePin={handleToggleVisitHistoryPin}
               variant="full"
             />
           </motion.div>
@@ -1893,8 +2222,8 @@ function MainApp() {
                  </button>
                </div>
                {visits.length > 0 && (
-                 <button 
-                   onClick={() => setVisits([])}
+                 <button
+                   onClick={handleResetVisits}
                    className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1 uppercase font-bold tracking-wider"
                  >
                    <Trash2 className="w-3 h-3" /> リセット
@@ -1909,12 +2238,16 @@ function MainApp() {
                 const hasErrors = validation.errors.length > 0;
                 const hasWarnings = !hasErrors && validation.warnings.length > 0;
                 const taskOptions = taskOptionsForVisit(settings.tasks, visit);
+                const addressCheck = addressChecks[visit.id];
+                const isGeocodeFailed = geocodeFailedVisitId === visit.id || addressCheck === 'failed';
                 return (
                 <div
                   key={visit.id}
+                  id={`visit-card-${visit.id}`}
                   className={cn(
                     "bg-card p-4 rounded-xl border relative group transition-all hover:border-blue-500/30 overflow-hidden",
-                    hasErrors ? "border-red-500/50" : hasWarnings ? "border-yellow-500/30" : "border-ui"
+                    isGeocodeFailed ? "border-red-500/60 ring-1 ring-red-500/40"
+                      : hasErrors ? "border-red-500/50" : hasWarnings ? "border-yellow-500/30" : "border-ui"
                   )}
                 >
                   <div
@@ -1975,13 +2308,63 @@ function MainApp() {
                       rows={2}
                       value={visit.address}
                       onChange={(e) => handleUpdateVisit(visit.id, { address: e.target.value })}
+                      onFocus={() => setAddressSuggestFor(visit.id)}
+                      onBlur={() => {
+                        setAddressSuggestFor(prev => (prev === visit.id ? null : prev));
+                        void handleAddressBlur(visit.id, visit.address);
+                      }}
                     />
                     <CopyActionButton
                       value={visit.address}
                       label="住所をコピー"
                       className="absolute right-2 top-2"
                     />
+                    {addressSuggestFor === visit.id && (() => {
+                      const suggestions = buildAddressSuggestions(visitHistory, visit.address);
+                      if (suggestions.length === 0) return null;
+                      return (
+                        <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-[#232833] border border-ui rounded-lg shadow-2xl overflow-hidden">
+                          {suggestions.map(entry => (
+                            <button
+                              key={entry.id}
+                              // mousedown (not click) so the textarea blur doesn't
+                              // close the dropdown before the selection lands.
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                applyAddressSuggestion(visit.id, entry);
+                              }}
+                              className="w-full text-left px-3 py-2.5 text-xs hover:bg-blue-500/10 flex items-center gap-2 border-b border-ui/50 last:border-b-0"
+                            >
+                              {entry.pinned ? (
+                                <PinIcon className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                              ) : (
+                                <Clock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                              )}
+                              <span className="truncate text-gray-200">{entry.address}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
+                  {addressCheck === 'checking' && (
+                    <p className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 mb-3 -mt-1">
+                      <span className="w-3 h-3 border-2 border-slate-500/40 border-t-slate-300 rounded-full animate-spin" />
+                      住所を確認しています...
+                    </p>
+                  )}
+                  {addressCheck === 'failed' && (
+                    <p className="flex items-center gap-1.5 text-[10px] font-bold text-red-300 mb-3 -mt-1">
+                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                      地図で住所を特定できませんでした。番地まで含めて確認してください
+                    </p>
+                  )}
+                  {addressCheck === 'ok' && (
+                    <p className="flex items-center gap-1.5 text-[10px] font-bold text-green-300 mb-3 -mt-1">
+                      <CheckCircle2 className="w-3 h-3 shrink-0" />
+                      住所を確認しました
+                    </p>
+                  )}
                   {(validation.errors.length > 0 || validation.warnings.length > 0) && (
                     <div className="mb-3 space-y-1">
                       {validation.errors.map(message => (
@@ -2322,22 +2705,51 @@ function MainApp() {
                   On desktop the map lives in its own right-side section below. */}
               {!isDesktop && (
                 <>
-                  <div className="h-[360px] relative border-b border-ui bg-bg">
-                    <MapComponent plan={activePlan} settings={settings} />
-                  </div>
-                  <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
-                    <div className="flex items-center gap-3">
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" /><span className="font-bold text-gray-300">正常</span></span>
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#fbbf24]" /><span className="font-bold text-gray-300">余裕少</span></span>
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_#f87171]" /><span className="font-bold text-gray-300">遅延懸念</span></span>
-                    </div>
-                    <span className="text-secondary italic">案: {activePlan.label}</span>
-                  </div>
+                  <button
+                    onClick={toggleMobileMap}
+                    className="w-full flex items-center justify-between gap-3 px-4 py-2.5 border-b border-ui bg-slate-900/40 hover:bg-slate-900/70 transition-colors"
+                    aria-expanded={showMobileMap}
+                  >
+                    <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-secondary">
+                      <MapPin className="w-3.5 h-3.5 text-blue-400" />
+                      ルート地図
+                    </span>
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-blue-300">
+                      {showMobileMap ? '隠す' : '表示'}
+                      {showMobileMap
+                        ? <ChevronUp className="w-3.5 h-3.5" />
+                        : <ChevronDown className="w-3.5 h-3.5" />}
+                    </span>
+                  </button>
+                  {showMobileMap && (
+                    <>
+                      <div className="h-[360px] relative border-b border-ui bg-bg">
+                        <MapComponent plan={activePlan} settings={settings} />
+                      </div>
+                      <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-ui text-[10px]">
+                        <div className="flex items-center gap-3">
+                          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-400 shadow-[0_0_6px_#4ade80]" /><span className="font-bold text-gray-300">正常</span></span>
+                          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_6px_#fbbf24]" /><span className="font-bold text-gray-300">余裕少</span></span>
+                          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_6px_#f87171]" /><span className="font-bold text-gray-300">遅延懸念</span></span>
+                        </div>
+                        <span className="text-secondary italic">案: {activePlan.label}</span>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
 
               {/* Path List */}
               <div className="p-4 space-y-3 custom-scrollbar">
+                <DndContext
+                  sensors={dndSensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleCustomDragEnd}
+                >
+                <SortableContext
+                  items={activePlan.legs.filter(isCompleteLeg).flatMap(l => (l.visitId ? [l.visitId] : []))}
+                  strategy={verticalListSortingStrategy}
+                >
                 {activePlan.legs.filter(isCompleteLeg).map((leg, idx) => {
                   const lunchBreak = activePlan.lunchBreak;
                   const visit = leg.visitId
@@ -2349,8 +2761,9 @@ function MainApp() {
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
                   const phoneNumber = visit?.phoneNumber?.trim() || '';
                   const addressParts = visit ? formatVisitAddress(visit.address) : null;
-                  return (
-                  <div key={idx} className="relative">
+                  const isCustomPlan = activePlan.id === 'X';
+                  const legBody = (dragHandle: { props: Record<string, unknown>; isDragging: boolean } | null) => (
+                  <div className={cn("relative", dragHandle?.isDragging && "opacity-90")}>
                     {leg.visitId && visit ? (
                       <motion.div
                         initial={{ opacity: 0, y: 10 }}
@@ -2403,6 +2816,14 @@ function MainApp() {
                           <div className="flex gap-1 shrink-0">
                             {activePlan.id === 'X' && (
                               <>
+                                <button
+                                  {...(dragHandle?.props || {})}
+                                  title="ドラッグで並び替え"
+                                  aria-label="ドラッグで並び替え"
+                                  className="p-1.5 hover:bg-blue-500/10 rounded cursor-grab active:cursor-grabbing touch-none"
+                                >
+                                  <GripVertical className="w-4 h-4 text-blue-400" />
+                                </button>
                                 <button
                                   onClick={() => moveCustomVisit(visit.id, -1)}
                                   disabled={customOrder.indexOf(visit.id) <= 0}
@@ -2569,7 +2990,23 @@ function MainApp() {
                     )}
                   </div>
                   );
+                  if (leg.visitId && visit && isCustomPlan) {
+                    return (
+                      <React.Fragment key={visit.id}>
+                        <SortableRouteVisit id={visit.id}>
+                          {legBody}
+                        </SortableRouteVisit>
+                      </React.Fragment>
+                    );
+                  }
+                  return (
+                    <React.Fragment key={leg.visitId ? `v-${leg.visitId}` : `end-${idx}`}>
+                      {legBody(null)}
+                    </React.Fragment>
+                  );
                 })}
+                </SortableContext>
+                </DndContext>
               </div>
 
               {/* Bottom CTA */}
@@ -2772,6 +3209,14 @@ function MainApp() {
                         再試行
                       </button>
                     )}
+                    {notice.action && (
+                      <button
+                        onClick={() => { const a = notice.action; clearNotice(); a?.run(); }}
+                        className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/40 text-blue-100"
+                      >
+                        {notice.action.label}
+                      </button>
+                    )}
                     <button
                       onClick={clearNotice}
                       className="text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded hover:bg-white/10 text-gray-400"
@@ -2896,6 +3341,7 @@ function MainApp() {
             onBlankAdd={handleAddBlankVisit}
             onAddFromHistory={handleAddVisitFromHistory}
             onDeleteHistory={handleDeleteVisitHistory}
+            onTogglePinHistory={handleToggleVisitHistoryPin}
             onClose={() => setShowVisitAddSheet(false)}
           />
         )}
@@ -2909,12 +3355,14 @@ function VisitAddSheet({
   onBlankAdd,
   onAddFromHistory,
   onDeleteHistory,
+  onTogglePinHistory,
   onClose,
 }: {
   history: VisitHistoryEntry[];
   onBlankAdd: () => void;
   onAddFromHistory: (entry: VisitHistoryEntry) => void;
   onDeleteHistory: (id: string) => void;
+  onTogglePinHistory: (id: string) => void;
   onClose: () => void;
 }) {
   return (
@@ -2955,6 +3403,7 @@ function VisitAddSheet({
             history={history}
             onAdd={onAddFromHistory}
             onDelete={onDeleteHistory}
+            onTogglePin={onTogglePinHistory}
             variant="picker"
           />
         </div>
@@ -2967,11 +3416,13 @@ function VisitHistoryPanel({
   history,
   onAdd,
   onDelete,
+  onTogglePin,
   variant = 'compact',
 }: {
   history: VisitHistoryEntry[];
   onAdd: (entry: VisitHistoryEntry) => void;
   onDelete: (id: string) => void;
+  onTogglePin: (id: string) => void;
   variant?: 'compact' | 'full' | 'picker';
 }) {
   const [query, setQuery] = useState('');
@@ -2987,13 +3438,82 @@ function VisitHistoryPanel({
         return haystack.includes(normalizedQuery);
       })
     : history;
-  const grouped = filteredHistory.reduce<Record<string, VisitHistoryEntry[]>>((acc, item) => {
+  // Pinned entries surface in their own section; date groups show the rest.
+  const pinnedHistory = filteredHistory.filter(item => item.pinned);
+  const unpinnedHistory = filteredHistory.filter(item => !item.pinned);
+  const grouped = unpinnedHistory.reduce<Record<string, VisitHistoryEntry[]>>((acc, item) => {
     (acc[item.lastSeenAt] ||= []).push(item);
     return acc;
   }, {});
   const groupedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
   const isFull = variant === 'full';
   const isPicker = variant === 'picker';
+
+  const renderEntry = (item: VisitHistoryEntry) => {
+    const telHref = item.phoneNumber ? `tel:${item.phoneNumber.replace(/[^\d+]/g, '')}` : '';
+    return (
+      <div key={item.id} className={cn(
+        "rounded-lg border p-3",
+        item.pinned ? "border-amber-500/30 bg-amber-500/5" : "border-ui bg-slate-800/40"
+      )}>
+        <div className="flex items-start gap-2">
+          <MapPin className={cn("w-4 h-4 mt-0.5 shrink-0", item.pinned ? "text-amber-300" : "text-emerald-400")} />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold text-white leading-relaxed break-words">{item.address}</p>
+            {item.phoneNumber ? (
+              <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-300">
+                <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                <span className="num-font">{item.phoneNumber}</span>
+              </div>
+            ) : (
+              <p className="text-[10px] text-slate-500 mt-1">電話番号なし</p>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-5 gap-2 mt-3">
+          <button
+            onClick={() => onAdd(item)}
+            className="col-span-2 py-2 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-emerald-200 text-[11px] font-bold hover:bg-emerald-600/30 transition-colors"
+          >
+            追加
+          </button>
+          <button
+            onClick={() => onTogglePin(item.id)}
+            title={item.pinned ? 'お気に入りを解除' : 'お気に入りにピン留め'}
+            aria-label={item.pinned ? 'お気に入りを解除' : 'お気に入りにピン留め'}
+            className={cn(
+              "py-2 rounded-md border text-[11px] font-bold transition-colors flex items-center justify-center",
+              item.pinned
+                ? "bg-amber-500/20 border-amber-500/40 text-amber-200 hover:bg-amber-500/30"
+                : "bg-slate-900 border-ui text-slate-400 hover:text-amber-200 hover:border-amber-500/40"
+            )}
+          >
+            {item.pinned ? <PinOffIcon className="w-3.5 h-3.5" /> : <PinIcon className="w-3.5 h-3.5" />}
+          </button>
+          {item.phoneNumber ? (
+            <a
+              href={telHref}
+              className="py-2 rounded-md bg-slate-900 border border-ui text-slate-200 text-[11px] font-bold hover:bg-slate-800 transition-colors text-center"
+            >
+              発信
+            </a>
+          ) : (
+            <button disabled className="py-2 rounded-md bg-slate-900 border border-ui text-slate-600 text-[11px] font-bold">
+              発信
+            </button>
+          )}
+          <button
+            onClick={() => onDelete(item.id)}
+            title="履歴から削除"
+            className="py-2 rounded-md bg-red-500/10 border border-red-500/20 text-red-300 text-[11px] font-bold hover:bg-red-500/20 transition-colors flex items-center justify-center"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const title = isFull ? '訪問履歴一覧' : isPicker ? '履歴から追加' : '訪問履歴';
   const description = isFull
     ? '過去に取得した住所・電話番号を日付別に遡れます'
@@ -3039,7 +3559,7 @@ function VisitHistoryPanel({
           <p className="text-xs font-bold text-slate-300">まだ履歴はありません</p>
           <p className="text-[10px] text-slate-500 mt-1">訪問先に住所を入れると自動で保存されます。</p>
         </div>
-      ) : groupedDates.length === 0 ? (
+      ) : groupedDates.length === 0 && pinnedHistory.length === 0 ? (
         <div className="border border-dashed border-ui rounded-lg p-4 text-center">
           <p className="text-xs font-bold text-slate-300">該当する履歴がありません</p>
           <p className="text-[10px] text-slate-500 mt-1">検索語を短くすると見つかりやすくなります。</p>
@@ -3049,6 +3569,20 @@ function VisitHistoryPanel({
           "overflow-y-auto custom-scrollbar space-y-4 pr-1",
           isFull ? "max-h-none" : "max-h-80"
         )}>
+          {pinnedHistory.length > 0 && (
+            <div>
+              <div className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm pb-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <PinIcon className="w-3.5 h-3.5 text-amber-300" />
+                  <span className="text-[11px] font-extrabold text-amber-200">お気に入り</span>
+                </div>
+                <span className="text-[10px] text-slate-500 font-bold">{pinnedHistory.length}件</span>
+              </div>
+              <div className={cn(isFull ? "grid gap-2 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2")}>
+                {pinnedHistory.map(renderEntry)}
+              </div>
+            </div>
+          )}
           {groupedDates.map(date => (
             <div key={date}>
               <div className="sticky top-0 z-10 bg-card/95 backdrop-blur-sm pb-2 flex items-center justify-between">
@@ -3059,54 +3593,7 @@ function VisitHistoryPanel({
                 <span className="text-[10px] text-slate-500 font-bold">{grouped[date].length}件</span>
               </div>
               <div className={cn(isFull ? "grid gap-2 sm:grid-cols-2 lg:grid-cols-3" : "space-y-2")}>
-                {grouped[date].map(item => {
-                  const telHref = item.phoneNumber ? `tel:${item.phoneNumber.replace(/[^\d+]/g, '')}` : '';
-                  return (
-                    <div key={item.id} className="rounded-lg border border-ui bg-slate-800/40 p-3">
-                      <div className="flex items-start gap-2">
-                        <MapPin className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs font-bold text-white leading-relaxed break-words">{item.address}</p>
-                          {item.phoneNumber ? (
-                            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-300">
-                              <Phone className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                              <span className="num-font">{item.phoneNumber}</span>
-                            </div>
-                          ) : (
-                            <p className="text-[10px] text-slate-500 mt-1">電話番号なし</p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-4 gap-2 mt-3">
-                        <button
-                          onClick={() => onAdd(item)}
-                          className="col-span-2 py-2 rounded-md bg-emerald-600/20 border border-emerald-500/30 text-emerald-200 text-[11px] font-bold hover:bg-emerald-600/30 transition-colors"
-                        >
-                          追加
-                        </button>
-                        {item.phoneNumber ? (
-                          <a
-                            href={telHref}
-                            className="py-2 rounded-md bg-slate-900 border border-ui text-slate-200 text-[11px] font-bold hover:bg-slate-800 transition-colors text-center"
-                          >
-                            発信
-                          </a>
-                        ) : (
-                          <button disabled className="py-2 rounded-md bg-slate-900 border border-ui text-slate-600 text-[11px] font-bold">
-                            発信
-                          </button>
-                        )}
-                        <button
-                          onClick={() => onDelete(item.id)}
-                          title="履歴から削除"
-                          className="py-2 rounded-md bg-red-500/10 border border-red-500/20 text-red-300 text-[11px] font-bold hover:bg-red-500/20 transition-colors flex items-center justify-center"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                {grouped[date].map(renderEntry)}
               </div>
             </div>
           ))}
