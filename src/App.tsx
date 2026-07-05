@@ -67,7 +67,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
-const APP_VERSION = 'v1.3';
+const APP_VERSION = 'v1.4';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -167,6 +167,12 @@ const TIME_OPTIONS = Array.from({ length: 25 }).map((_, i) => {
   return `${h.toString().padStart(2, '0')}:${m}`;
 });
 const WORK_MINUTE_OPTIONS = [20, 40, 60, 80, 100, 120];
+const APPLIANCE_CATEGORIES = ['エアコン', '冷蔵庫'];
+
+function normalizeWorkMinutes(minutes: number): number {
+  const value = Number(minutes) || 60;
+  return WORK_MINUTE_OPTIONS.find(option => value <= option) || WORK_MINUTE_OPTIONS[WORK_MINUTE_OPTIONS.length - 1];
+}
 
 type PlanScore = {
   idx: number;
@@ -190,6 +196,32 @@ function isCompleteLeg(leg: Leg | undefined | null): leg is Leg {
     typeof leg.endTime === 'string' &&
     Number.isFinite(leg.durationMin)
   );
+}
+
+function difficultyForWorkMinutes(minutes: number): Difficulty {
+  minutes = normalizeWorkMinutes(minutes);
+  if (minutes <= 40) return 1;
+  if (minutes <= 80) return 2;
+  return 3;
+}
+
+function difficultyLabel(difficulty: Difficulty): string {
+  return difficulty === 1 ? '低' : difficulty === 2 ? '中' : '高';
+}
+
+function displayTaskName(task: Settings['tasks'][number]): string {
+  if (!task.applianceCategory) return task.name;
+  return task.name.replace(`${task.applianceCategory}:`, '').trim();
+}
+
+function categoryForVisit(visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): string | undefined {
+  return visit.applianceCategory || inferApplianceCategoryFromModel(visit.modelNumber);
+}
+
+function taskOptionsForVisit(tasks: Settings['tasks'], visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): Settings['tasks'] {
+  const category = categoryForVisit(visit);
+  if (!category) return tasks;
+  return tasks.filter(task => task.applianceCategory === category);
 }
 
 function normalizeLeg(raw: Partial<Leg> | undefined | null): Leg | null {
@@ -893,7 +925,7 @@ function MainApp() {
         { id: '1', name: '点検', defaultMinutes: 30 },
         { id: '2', name: '修理', defaultMinutes: 60 },
         { id: '3', name: '設置', defaultMinutes: 90 },
-      ])
+      ]).map(task => ({ ...task, defaultMinutes: normalizeWorkMinutes(task.defaultMinutes) }))
     };
   });
   
@@ -910,8 +942,8 @@ function MainApp() {
       symptomName: typeof v.symptomName === 'string' ? v.symptomName : undefined,
       taskId: v.taskId,
       timeWindow: v.timeWindow,
-      workMinutes: Number(v.workMinutes) || 60,
-      difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
+      workMinutes: normalizeWorkMinutes(Number(v.workMinutes) || 60),
+      difficulty: difficultyForWorkMinutes(Number(v.workMinutes) || 60),
       coords: v.coords,
     }));
   });
@@ -1056,9 +1088,9 @@ function MainApp() {
 
   const handleLoadSampleAndOptimize = () => {
     const sample: Visit[] = [
-      { id: 's1', address: '東京都新宿区西新宿2-8-1', taskId: '1', workMinutes: 30, difficulty: 2 },
-      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', taskId: '2', workMinutes: 60, difficulty: 2, timeWindow: { start: '11:00', end: '13:00' } },
-      { id: 's3', address: '東京都港区六本木6-10-1', taskId: '3', workMinutes: 90, difficulty: 3 },
+      { id: 's1', address: '東京都新宿区西新宿2-8-1', taskId: '1', workMinutes: 40, difficulty: difficultyForWorkMinutes(40) },
+      { id: 's2', address: '東京都渋谷区道玄坂1-12-1', taskId: '2', workMinutes: 60, difficulty: difficultyForWorkMinutes(60), timeWindow: { start: '11:00', end: '13:00' } },
+      { id: 's3', address: '東京都港区六本木6-10-1', taskId: '3', workMinutes: 120, difficulty: difficultyForWorkMinutes(120) },
     ];
     setVisits(sample);
     dismissOnboarding();
@@ -1208,7 +1240,7 @@ function MainApp() {
       id: Math.random().toString(36).substr(2, 9),
       address: '',
       workMinutes: 60,
-      difficulty: 2
+      difficulty: difficultyForWorkMinutes(60)
     };
     setVisits([...visits, newVisit]);
     setActiveTab('input');
@@ -1227,7 +1259,7 @@ function MainApp() {
       address: entry.address,
       phoneNumber: entry.phoneNumber,
       workMinutes: 60,
-      difficulty: 2,
+      difficulty: difficultyForWorkMinutes(60),
     };
     setVisits([...visits, newVisit]);
     setActiveTab('input');
@@ -1247,6 +1279,13 @@ function MainApp() {
     setVisits(visits.map(v => {
       if (v.id !== id) return v;
       const next = { ...v, ...updates };
+      if (updates.modelNumber !== undefined && updates.applianceCategory === undefined) {
+        next.applianceCategory = inferApplianceCategoryFromModel(updates.modelNumber);
+      }
+      if (updates.workMinutes !== undefined) {
+        next.workMinutes = normalizeWorkMinutes(Number(updates.workMinutes) || 60);
+        next.difficulty = difficultyForWorkMinutes(next.workMinutes);
+      }
       // Invalidate cached coords when the address changes so the next
       // optimization re-geocodes (via the address-keyed cache, this stays cheap).
       if (updates.address !== undefined && updates.address !== v.address) {
@@ -1332,6 +1371,7 @@ function MainApp() {
         ? v.symptomName.trim()
         : undefined;
       const task = selectRepairTask(settings.tasks, { modelNumber, applianceCategory, symptomName });
+      const workMinutes = normalizeWorkMinutes(task?.defaultMinutes || 60);
 
       return {
         id: Math.random().toString(36).substr(2, 9),
@@ -1341,8 +1381,8 @@ function MainApp() {
         applianceCategory,
         symptomName,
         taskId: task?.id,
-        workMinutes: task?.defaultMinutes || 60,
-        difficulty: [1, 2, 3].includes(v.difficulty) ? v.difficulty as Difficulty : 2,
+        workMinutes,
+        difficulty: difficultyForWorkMinutes(workMinutes),
         timeWindow: v.startTime || v.endTime ? { start: v.startTime || '', end: v.endTime || '' } : undefined,
       };
     });
@@ -1846,6 +1886,7 @@ function MainApp() {
                 const validation = getVisitValidation(visit);
                 const hasErrors = validation.errors.length > 0;
                 const hasWarnings = !hasErrors && validation.warnings.length > 0;
+                const taskOptions = taskOptionsForVisit(settings.tasks, visit);
                 return (
                 <div
                   key={visit.id}
@@ -1865,23 +1906,21 @@ function MainApp() {
                         onChange={(e) => {
                           const tId = e.target.value;
                           const task = settings.tasks.find(t => t.id === tId);
+                          const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
                           handleUpdateVisit(visit.id, {
                             taskId: tId,
-                            workMinutes: task ? task.defaultMinutes : visit.workMinutes
+                            workMinutes,
+                            difficulty: difficultyForWorkMinutes(workMinutes)
                           });
                         }}
                       >
                         <option value="" disabled className="text-gray-500">作業を選択...</option>
-                        {settings.tasks.map(t => (
-                          <option key={t.id} value={t.id} className="bg-[#1A1D23]">{t.name}</option>
+                        {taskOptions.map(t => (
+                          <option key={t.id} value={t.id} className="bg-[#1A1D23]">{displayTaskName(t)}</option>
                         ))}
                       </select>
                     </div>
                     <div className="flex items-center gap-2">
-                      <DifficultySelector 
-                        value={visit.difficulty} 
-                        onChange={(d) => handleUpdateVisit(visit.id, { difficulty: d })} 
-                      />
                       <button onClick={() => handleDeleteVisit(visit.id)} className="p-1 hover:bg-red-500/10 rounded">
                         <Trash2 className="w-4 h-4 text-secondary hover:text-red-400" />
                       </button>
@@ -1895,6 +1934,55 @@ function MainApp() {
                       {visit.symptomName && <Badge>{visit.symptomName}</Badge>}
                     </div>
                   )}
+
+                  <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className="block">
+                      <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-1.5">
+                        <Hash className="w-3.5 h-3.5" /> 型番
+                      </span>
+                      <input
+                        className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                        placeholder="MSZ / MR..."
+                        value={visit.modelNumber || ''}
+                        onChange={(e) => {
+                          const modelNumber = e.target.value.toUpperCase();
+                          const applianceCategory = inferApplianceCategoryFromModel(modelNumber);
+                          const nextOptions = taskOptionsForVisit(settings.tasks, { modelNumber, applianceCategory });
+                          const keepsTask = nextOptions.some(task => task.id === visit.taskId);
+                          handleUpdateVisit(visit.id, {
+                            modelNumber,
+                            applianceCategory,
+                            taskId: keepsTask ? visit.taskId : undefined,
+                            ...(!keepsTask ? { workMinutes: 60 } : {}),
+                          });
+                        }}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-1.5">
+                        <Layers className="w-3.5 h-3.5" /> 機種
+                      </span>
+                      <select
+                        className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                        value={visit.applianceCategory || ''}
+                        onChange={(e) => {
+                          const applianceCategory = e.target.value || undefined;
+                          const nextOptions = taskOptionsForVisit(settings.tasks, { modelNumber: visit.modelNumber, applianceCategory });
+                          const keepsTask = nextOptions.some(task => task.id === visit.taskId);
+                          handleUpdateVisit(visit.id, {
+                            applianceCategory,
+                            taskId: keepsTask ? visit.taskId : undefined,
+                            ...(!keepsTask ? { workMinutes: 60 } : {}),
+                          });
+                        }}
+                      >
+                        <option value="" className="bg-[#1A1D23]">未判定</option>
+                        {APPLIANCE_CATEGORIES.map(category => (
+                          <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
 
                   <div className="relative mb-3">
                     <textarea
@@ -1954,19 +2042,13 @@ function MainApp() {
                         <TimeWindowInput visit={visit} onChange={(u) => handleUpdateVisit(visit.id, u)} />
                      </div>
 
-                     <div className="flex items-center gap-3 bg-slate-800/50 p-2.5 rounded border border-ui">
+                     <div className="flex items-center justify-between gap-3 bg-slate-800/50 p-2.5 rounded border border-ui">
                         <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">
                           滞在予定（作業時間）
                         </span>
-                        <select 
-                          className="bg-slate-900 border border-ui text-white rounded-md p-1.5 text-xs font-bold flex-1"
-                          value={visit.workMinutes}
-                          onChange={(e) => handleUpdateVisit(visit.id, { workMinutes: Number(e.target.value) })}
-                        >
-                          {WORK_MINUTE_OPTIONS.map(minutes => (
-                            <option key={minutes} value={minutes}>{minutes}分</option>
-                          ))}
-                        </select>
+                        <span className="text-xs font-bold text-white">
+                          {visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}
+                        </span>
                      </div>
                   </div>
                 </div>
@@ -2780,7 +2862,24 @@ function MainApp() {
           <TasksModal
             settings={settings}
             onSave={(val) => {
-              setSettings(val);
+              const nextSettings = {
+                ...val,
+                tasks: val.tasks.map(task => ({
+                  ...task,
+                  defaultMinutes: normalizeWorkMinutes(task.defaultMinutes),
+                })),
+              };
+              setSettings(nextSettings);
+              setVisits(prev => prev.map(visit => {
+                const task = nextSettings.tasks.find(item => item.id === visit.taskId);
+                if (!task) return visit;
+                const workMinutes = task.defaultMinutes;
+                return {
+                  ...visit,
+                  workMinutes,
+                  difficulty: difficultyForWorkMinutes(workMinutes),
+                };
+              }));
               setShowTasksSettings(false);
             }}
             onClose={() => setShowTasksSettings(false)}
@@ -3047,6 +3146,13 @@ function ParsedVisitsReviewModal({
     onChange(visits.map(v => {
       if (v.id !== id) return v;
       const next = { ...v, ...updates };
+      if (updates.modelNumber !== undefined && updates.applianceCategory === undefined) {
+        next.applianceCategory = inferApplianceCategoryFromModel(updates.modelNumber);
+      }
+      if (updates.workMinutes !== undefined) {
+        next.workMinutes = normalizeWorkMinutes(Number(updates.workMinutes) || 60);
+        next.difficulty = difficultyForWorkMinutes(next.workMinutes);
+      }
       if (updates.address !== undefined && updates.address !== v.address) {
         next.coords = undefined;
       }
@@ -3076,7 +3182,7 @@ function ParsedVisitsReviewModal({
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <ClipboardList className="w-4 h-4 text-blue-400" /> 読み取り結果の確認
             </h2>
-            <p className="text-[11px] text-secondary mt-1">作業・住所・電話番号・時間・難易度を確認して追加します。</p>
+            <p className="text-[11px] text-secondary mt-1">型番・機種・作業・住所・電話番号・時間を確認して追加します。</p>
           </div>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
@@ -3086,6 +3192,7 @@ function ParsedVisitsReviewModal({
             <div className="py-8 text-center text-sm text-secondary">追加する候補がありません</div>
           ) : visits.map((visit, idx) => {
             const missingAddress = !visit.address.trim();
+            const taskOptions = taskOptionsForVisit(tasks, visit);
             return (
               <div key={visit.id} className={cn(
                 "rounded-xl border p-3 bg-slate-900/35",
@@ -3129,31 +3236,68 @@ function ParsedVisitsReviewModal({
                       onChange={(e) => {
                         const taskId = e.target.value;
                         const task = tasks.find(t => t.id === taskId);
+                        const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
                         updateVisit(visit.id, {
                           taskId,
-                          workMinutes: task ? task.defaultMinutes : visit.workMinutes,
+                          workMinutes,
+                          difficulty: difficultyForWorkMinutes(workMinutes),
                         });
                       }}
                     >
                       <option value="" disabled className="text-gray-500">作業を選択...</option>
-                      {tasks.map(task => (
+                      {taskOptions.map(task => (
                         <option key={task.id} value={task.id} className="bg-[#1A1D23]">
-                          {task.name}（{task.defaultMinutes}分）
+                          {displayTaskName(task)}
                         </option>
                       ))}
                     </select>
                   </label>
-                  <label className="w-24 block">
+                </div>
+
+                <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className="block">
                     <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                      <Clock className="w-3.5 h-3.5" /> 作業時間
+                      <Hash className="w-3.5 h-3.5" /> 型番
+                    </span>
+                    <input
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                      placeholder="MSZ / MR..."
+                      value={visit.modelNumber || ''}
+                      onChange={(e) => {
+                        const modelNumber = e.target.value.toUpperCase();
+                        const applianceCategory = inferApplianceCategoryFromModel(modelNumber);
+                        const nextOptions = taskOptionsForVisit(tasks, { modelNumber, applianceCategory });
+                        const keepsTask = nextOptions.some(task => task.id === visit.taskId);
+                        updateVisit(visit.id, {
+                          modelNumber,
+                          applianceCategory,
+                          taskId: keepsTask ? visit.taskId : undefined,
+                          ...(!keepsTask ? { workMinutes: 60 } : {}),
+                        });
+                      }}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
+                      <Layers className="w-3.5 h-3.5" /> 機種
                     </span>
                     <select
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      value={visit.workMinutes}
-                      onChange={(e) => updateVisit(visit.id, { workMinutes: Number(e.target.value) })}
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                      value={visit.applianceCategory || ''}
+                      onChange={(e) => {
+                        const applianceCategory = e.target.value || undefined;
+                        const nextOptions = taskOptionsForVisit(tasks, { modelNumber: visit.modelNumber, applianceCategory });
+                        const keepsTask = nextOptions.some(task => task.id === visit.taskId);
+                        updateVisit(visit.id, {
+                          applianceCategory,
+                          taskId: keepsTask ? visit.taskId : undefined,
+                          ...(!keepsTask ? { workMinutes: 60 } : {}),
+                        });
+                      }}
                     >
-                      {WORK_MINUTE_OPTIONS.map(minutes => (
-                        <option key={minutes} value={minutes}>{minutes}分</option>
+                      <option value="" className="bg-[#1A1D23]">未判定</option>
+                      {APPLIANCE_CATEGORIES.map(category => (
+                        <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>
                       ))}
                     </select>
                   </label>
@@ -3210,8 +3354,8 @@ function ParsedVisitsReviewModal({
                     <TimeWindowInput visit={visit} onChange={(u) => updateVisit(visit.id, u)} />
                   </div>
                   <div className="bg-slate-800/50 p-2.5 rounded border border-ui flex flex-col gap-2 justify-between">
-                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">難易度</span>
-                    <DifficultySelector value={visit.difficulty} onChange={(d) => updateVisit(visit.id, { difficulty: d })} />
+                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">予定</span>
+                    <span className="text-xs font-bold text-white">{visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}</span>
                   </div>
                 </div>
               </div>
@@ -3405,31 +3549,6 @@ function UpgradeModal({ reason, onClose, onUpgrade }: { reason: string; onClose:
 }
 
 // Sub-components
-function DifficultySelector({ value, onChange }: { value: Difficulty, onChange: (d: Difficulty) => void }) {
-  const options = [
-    { v: 1, color: "bg-green-500", label: "低" },
-    { v: 2, color: "bg-yellow-500", label: "中" },
-    { v: 3, color: "bg-red-500", label: "高" },
-  ];
-  return (
-    <div className="flex gap-1 bg-black/20 p-1 rounded-full border border-ui">
-      {options.map((opt) => (
-        <button
-          key={opt.v}
-          onClick={() => onChange(opt.v as Difficulty)}
-          className={cn(
-            "w-7 h-7 rounded-full flex items-center justify-center transition-all text-xs font-bold leading-none",
-            value === opt.v ? `${opt.color} text-white shadow-lg ring-1 ring-white/30 scale-110` : "text-gray-500 bg-transparent hover:bg-white/5"
-          )}
-          title={`優先度: ${opt.label}`}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function StatusBadge({ status }: { status: 'ok' | 'warning' | 'violation' }) {
   if (status === 'ok') return <Badge variant="success" className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> OK</Badge>;
   if (status === 'warning') return <Badge variant="warning" className="flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> ギリギリ</Badge>;
@@ -3437,7 +3556,10 @@ function StatusBadge({ status }: { status: 'ok' | 'warning' | 'violation' }) {
 }
 
 function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
-  const [tasks, setTasks] = useState(settings.tasks || []);
+  const [tasks, setTasks] = useState((settings.tasks || []).map(task => ({
+    ...task,
+    defaultMinutes: normalizeWorkMinutes(task.defaultMinutes),
+  })));
   const [newName, setNewName] = useState('');
   const [newMinutes, setNewMinutes] = useState('60');
   // id of task currently being edited inline, null if none
@@ -3451,21 +3573,26 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
     setEditMinutes(String(task.defaultMinutes));
   };
 
+  const buildCommittedTasks = () => {
+    if (!editingId) return tasks;
+    const trimmedName = editName.trim();
+    if (!trimmedName) return tasks;
+    return tasks.map(t =>
+      t.id === editingId
+        ? { ...t, name: trimmedName, defaultMinutes: normalizeWorkMinutes(parseInt(editMinutes) || t.defaultMinutes) }
+        : t
+    );
+  };
+
   const commitEdit = () => {
     if (!editingId) return;
-    const trimmedName = editName.trim();
-    if (!trimmedName) { setEditingId(null); return; }
-    setTasks(prev => prev.map(t =>
-      t.id === editingId
-        ? { ...t, name: trimmedName, defaultMinutes: parseInt(editMinutes) || t.defaultMinutes }
-        : t
-    ));
+    setTasks(buildCommittedTasks());
     setEditingId(null);
   };
 
   const handleAdd = () => {
     if (!newName.trim()) return;
-    setTasks([...tasks, { id: Date.now().toString(), name: newName.trim(), defaultMinutes: parseInt(newMinutes) || 60, source: 'manual' }]);
+    setTasks([...tasks, { id: Date.now().toString(), name: newName.trim(), defaultMinutes: normalizeWorkMinutes(parseInt(newMinutes) || 60), source: 'manual' }]);
     setNewName('');
     setNewMinutes('60');
   };
@@ -3476,8 +3603,8 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
   };
 
   const handleSave = () => {
-    if (editingId) commitEdit();
-    onSave({ ...settings, tasks });
+    const nextTasks = buildCommittedTasks();
+    onSave({ ...settings, tasks: nextTasks });
   };
 
   return (
@@ -3494,7 +3621,7 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
         className="bg-card w-full max-w-md flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
       >
         <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
-          <h2 className="text-sm font-bold text-white flex items-center gap-2">作業名の設定</h2>
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">作業時間の設定</h2>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
 
@@ -3514,13 +3641,15 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
                      onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingId(null); }}
                      placeholder="作業名"
                    />
-                   <input
-                     type="number"
-                     className="w-16 bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-sm font-bold outline-none text-right"
+                   <select
+                     className="w-20 bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-sm font-bold outline-none"
                      value={editMinutes}
                      onChange={(e) => setEditMinutes(e.target.value)}
-                     min="1"
-                   />
+                   >
+                     {WORK_MINUTE_OPTIONS.map(minutes => (
+                       <option key={minutes} value={minutes} className="bg-[#1A1D23]">{minutes}</option>
+                     ))}
+                   </select>
                    <span className="text-xs text-secondary">分</span>
                    <button
                      onClick={commitEdit}
@@ -3540,8 +3669,13 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
                ) : (
                  <div className="flex justify-between items-center">
                    <div>
-                     <h4 className="text-sm font-bold text-white">{task.name}</h4>
-                     <p className="text-[10px] text-secondary mt-0.5">デフォルト: {task.defaultMinutes}分</p>
+                     <div className="flex items-center gap-1.5 flex-wrap">
+                       {task.applianceCategory && <Badge>{task.applianceCategory}</Badge>}
+                       <h4 className="text-sm font-bold text-white">{displayTaskName(task)}</h4>
+                     </div>
+                     <p className="text-[10px] text-secondary mt-1">
+                       作業時間: {task.defaultMinutes}分 / 難易度{difficultyLabel(difficultyForWorkMinutes(task.defaultMinutes))}
+                     </p>
                    </div>
                    <div className="flex items-center gap-1">
                      <button
@@ -3574,14 +3708,15 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
                  onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
                  placeholder="作業名 (例: 点検)"
                />
-               <input
-                 type="number"
+               <select
                  className="w-20 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none text-right"
                  value={newMinutes}
                  onChange={(e) => setNewMinutes(e.target.value)}
-                 placeholder="分"
-                 min="1"
-               />
+               >
+                 {WORK_MINUTE_OPTIONS.map(minutes => (
+                   <option key={minutes} value={minutes} className="bg-[#1A1D23]">{minutes}</option>
+                 ))}
+               </select>
                <span className="flex items-center text-sm text-secondary -ml-1">分</span>
                <button
                  onClick={handleAdd}
