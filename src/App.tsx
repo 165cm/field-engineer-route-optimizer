@@ -67,6 +67,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
+const APP_VERSION = 'v1.3';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -1669,7 +1670,7 @@ function MainApp() {
         <div>
           <h1 className="text-lg font-bold tracking-tight flex items-center gap-2">
             <span className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center text-white text-sm">R</span>
-            ルート最適化 <span className="text-xs font-normal text-slate-400">v1.2</span>
+            ルート最適化 <span className="text-xs font-normal text-slate-400">{APP_VERSION}</span>
           </h1>
         </div>
         <div className="flex items-center gap-3">
