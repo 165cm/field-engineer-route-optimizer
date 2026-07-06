@@ -625,6 +625,24 @@ function getTodayDateInputValue(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+// Saved work dates go stale once the day passes; fall back to today so the
+// calendar registration date always starts at "today" on launch. Deliberately
+// chosen future dates are kept. ISO "YYYY-MM-DD" strings compare correctly
+// as plain strings.
+function normalizeStoredWorkDate(value: unknown): string {
+  const today = getTodayDateInputValue();
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return today;
+  return value < today ? today : value;
+}
+
+// input[type=date] only opens its calendar from the tiny indicator icon by
+// default; open it from anywhere in the field where the browser supports it.
+function openNativeDatePicker(input: HTMLInputElement) {
+  try {
+    (input as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+  } catch {}
+}
+
 function parseDateTimeForCalendar(dateValue: string, timeValue: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue) || !/^\d{2}:\d{2}$/.test(timeValue)) return null;
   const [year, month, day] = dateValue.split('-').map(Number);
@@ -940,7 +958,7 @@ function MainApp() {
       homeAddress: '東京都新宿区新宿1-1-1',
       endLocation: 'home',
       ...parsed,
-      workDate: typeof parsed.workDate === 'string' ? parsed.workDate : getTodayDateInputValue(),
+      workDate: normalizeStoredWorkDate(parsed.workDate),
       startTime: parsed.startTime || '09:00',
       lunchBreakMinutes: [0, 15, 30, 45, 60].includes(parsedLunchBreak) ? parsedLunchBreak : 0,
       tasks: ensureDefaultRepairTasks(parsed.tasks || [
@@ -2624,6 +2642,22 @@ function MainApp() {
                 >
                   <Navigation className="w-5 h-5" /> Google Maps でナビ開始
                 </button>
+                <div className="flex items-center justify-between gap-3 bg-slate-800/60 border border-ui rounded-xl px-3 py-2.5">
+                  <label htmlFor="calendar-work-date" className="text-[10px] text-secondary font-bold uppercase tracking-widest shrink-0">
+                    カレンダー登録日
+                  </label>
+                  <input
+                    id="calendar-work-date"
+                    type="date"
+                    value={settings.workDate || getTodayDateInputValue()}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value) setSettings(prev => ({ ...prev, workDate: value }));
+                    }}
+                    onClick={(e) => openNativeDatePicker(e.currentTarget)}
+                    className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-1.5 text-sm focus:border-blue-500/50 outline-none num-font"
+                  />
+                </div>
                 <button
                   onClick={handleRegisterGoogleCalendar}
                   disabled={!isGoogleCalendarReady || isRegisteringCalendar}
@@ -3806,6 +3840,7 @@ function StartEndModal({ settings, onSave, onClose }: { settings: Settings, onSa
               className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none num-font"
               value={workDate}
               onChange={(e) => setWorkDate(e.target.value)}
+              onClick={(e) => openNativeDatePicker(e.currentTarget)}
             />
             <p className="text-[10px] text-secondary mt-1">カレンダー書き出し時に、この日付で現地滞在予定を作成します。</p>
           </div>
