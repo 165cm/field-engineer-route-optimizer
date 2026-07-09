@@ -39,8 +39,7 @@ import {
   Copy,
   Pencil,
   Check,
-  Hash,
-  Tag
+  Hash
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -241,6 +240,41 @@ function normalizeSlipNumber(raw?: string | null): string | undefined {
 function normalizeModelNumber(raw?: string | null): string | undefined {
   const trimmed = typeof raw === 'string' ? raw.normalize('NFKC').trim().toUpperCase() : '';
   return trimmed || undefined;
+}
+
+// UI shorthand: the slip prefix and the model prefix (MSZ-=エアコン, MR-=冷蔵庫)
+// are fixed/derivable, so inputs only show the variable part. Storage keeps the
+// full strings — the calendar memo and OCR normalization rely on them.
+function slipNumberDigits(value?: string): string {
+  if (!value) return '';
+  return value.startsWith(SLIP_NUMBER_PREFIX) ? value.slice(SLIP_NUMBER_PREFIX.length) : value;
+}
+
+function composeSlipNumber(input: string): string | undefined {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  return /^\d+$/.test(trimmed) ? `${SLIP_NUMBER_PREFIX}${trimmed}` : trimmed.toUpperCase();
+}
+
+const MODEL_PREFIX_BY_CATEGORY: Record<string, string> = {
+  'エアコン': 'MSZ-',
+  '冷蔵庫': 'MR-',
+};
+
+function splitModelNumber(model: string | undefined, category: string | undefined): { prefix: string; suffix: string } {
+  const value = model || '';
+  const match = value.toUpperCase().match(/^(MSZ-|MSZ|MR-|MR)/);
+  if (match) return { prefix: match[1], suffix: value.slice(match[1].length) };
+  if (!value && category) return { prefix: MODEL_PREFIX_BY_CATEGORY[category] || '', suffix: '' };
+  return { prefix: '', suffix: value };
+}
+
+function composeModelNumber(input: string, prefix: string): string | undefined {
+  const trimmed = input.trim();
+  if (!trimmed) return undefined;
+  // A pasted full model keeps its own prefix; otherwise the shown one applies.
+  if (!prefix || /^(MSZ|MR)/i.test(trimmed)) return trimmed;
+  return `${prefix}${trimmed}`;
 }
 
 function categoryForVisit(visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): string | undefined {
@@ -1988,6 +2022,11 @@ function MainApp() {
                             nextVisitForApplianceCategory(visit, applianceCategory, settings.tasks)
                           )}
                         />
+                        <ModelNumberInput
+                          visit={visit}
+                          onChange={(modelNumber) => handleUpdateVisit(visit.id, { modelNumber })}
+                          className="flex-1"
+                        />
                       </div>
                       <select 
                         className="bg-transparent border-none text-sm font-bold focus:ring-0 w-full appearance-none cursor-pointer"
@@ -2047,70 +2086,51 @@ function MainApp() {
                     </div>
                   )}
 
-                  <div className="flex flex-col gap-3 mt-3">
-                     <label className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
-                        <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
-                          <Phone className="w-3.5 h-3.5" /> 電話番号
-                        </span>
-                        <div className="relative">
-                          <input
-                            className="w-full bg-slate-900 border border-ui text-white rounded-md px-3 py-2 pr-11 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
-                            placeholder="電話番号を入力..."
-                            value={visit.phoneNumber || ''}
-                            onChange={(e) => handleUpdateVisit(visit.id, { phoneNumber: e.target.value })}
-                          />
-                          <CopyActionButton
-                            value={visit.phoneNumber}
-                            label="電話番号をコピー"
-                            className="absolute right-1.5 top-1/2 -translate-y-1/2"
-                          />
-                        </div>
-                     </label>
-
-                     <div className="grid grid-cols-2 gap-3">
-                        <label className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
+                  <div className="flex flex-col gap-2.5 mt-3">
+                     <div className="grid grid-cols-2 gap-2.5">
+                        <label className="flex flex-col gap-1.5 bg-slate-800/50 p-2 rounded border border-ui min-w-0">
+                           <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                             <Phone className="w-3.5 h-3.5" /> 電話番号
+                           </span>
+                           <div className="relative">
+                             <input
+                               className="w-full bg-slate-900 border border-ui text-white rounded-md pl-2.5 py-1.5 pr-9 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
+                               placeholder="電話番号"
+                               value={visit.phoneNumber || ''}
+                               onChange={(e) => handleUpdateVisit(visit.id, { phoneNumber: e.target.value })}
+                             />
+                             <CopyActionButton
+                               value={visit.phoneNumber}
+                               label="電話番号をコピー"
+                               className="absolute right-1 top-1/2 -translate-y-1/2"
+                             />
+                           </div>
+                        </label>
+                        <label className="flex flex-col gap-1.5 bg-slate-800/50 p-2 rounded border border-ui min-w-0">
                            <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
                              <Hash className="w-3.5 h-3.5" /> 伝票番号
                            </span>
-                           <input
-                             className="w-full bg-slate-900 border border-ui text-white rounded-md px-2.5 py-2 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
-                             placeholder="X20420-000000"
-                             value={visit.slipNumber || ''}
-                             onChange={(e) => handleUpdateVisit(visit.id, { slipNumber: e.target.value })}
-                             onBlur={(e) => handleUpdateVisit(visit.id, { slipNumber: normalizeSlipNumber(e.target.value) })}
-                           />
-                        </label>
-                        <label className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
-                           <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
-                             <Tag className="w-3.5 h-3.5" /> 型番
-                           </span>
-                           <input
-                             className="w-full bg-slate-900 border border-ui text-white rounded-md px-2.5 py-2 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
-                             placeholder="MSZ-… / MR-…"
-                             value={visit.modelNumber || ''}
-                             onChange={(e) => handleUpdateVisit(visit.id, { modelNumber: e.target.value })}
-                             onBlur={(e) => handleUpdateVisit(visit.id, { modelNumber: normalizeModelNumber(e.target.value) })}
+                           <SlipNumberInput
+                             value={visit.slipNumber}
+                             onChange={(slipNumber) => handleUpdateVisit(visit.id, { slipNumber })}
+                             className="bg-slate-900 rounded-md"
                            />
                         </label>
                      </div>
 
-                     <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
-                        <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
-                          <Clock className="w-3.5 h-3.5" /> 訪問時間
-                        </span>
+                     <div className="flex flex-col gap-1.5 bg-slate-800/50 p-2 rounded border border-ui">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5" /> 訪問時間・滞在予定
+                          </span>
+                          <span
+                            className="text-[10px] font-bold rounded-full border px-2 py-0.5"
+                            style={difficultyBadgeStyle(visit.difficulty)}
+                          >
+                            {visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}
+                          </span>
+                        </div>
                         <TimeWindowInput visit={visit} onChange={(u) => handleUpdateVisit(visit.id, u)} />
-                     </div>
-
-                     <div className="flex items-center justify-between gap-3 bg-slate-800/50 p-2.5 rounded border border-ui">
-                        <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">
-                          滞在予定（作業時間）
-                        </span>
-                        <span
-                          className="text-xs font-bold rounded-full border px-2 py-1"
-                          style={difficultyBadgeStyle(visit.difficulty)}
-                        >
-                          {visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}
-                        </span>
                      </div>
                   </div>
                 </div>
@@ -3284,7 +3304,7 @@ function ParsedVisitsReviewModal({
                   style={{ background: difficultyColor(visit.difficulty).work }}
                 />
                 <div className="flex items-center justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
                     <span
                       className="w-6 h-6 shrink-0 rounded-md border flex items-center justify-center text-[10px] font-bold text-white"
                       style={{
@@ -3300,6 +3320,11 @@ function ParsedVisitsReviewModal({
                         visit.id,
                         nextVisitForApplianceCategory(visit, applianceCategory, tasks)
                       )}
+                    />
+                    <ModelNumberInput
+                      visit={visit}
+                      onChange={(modelNumber) => updateVisit(visit.id, { modelNumber })}
+                      className="flex-1"
                     />
                   </div>
                   <button
@@ -3363,70 +3388,48 @@ function ParsedVisitsReviewModal({
                 )}
 
                 <div className="mt-2 grid grid-cols-2 gap-2">
-                  <label className="block">
+                  <label className="block min-w-0">
                     <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
                       <Hash className="w-3 h-3" /> 伝票番号
                     </span>
-                    <input
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      placeholder="X20420-000000"
-                      value={visit.slipNumber || ''}
-                      onChange={(e) => updateVisit(visit.id, { slipNumber: e.target.value })}
-                      onBlur={(e) => updateVisit(visit.id, { slipNumber: normalizeSlipNumber(e.target.value) })}
+                    <SlipNumberInput
+                      value={visit.slipNumber}
+                      onChange={(slipNumber) => updateVisit(visit.id, { slipNumber })}
                     />
-                    {visit.slipNumber && !SLIP_NUMBER_PATTERN.test(visit.slipNumber) && (
-                      <p className="text-[10px] text-yellow-300 font-bold mt-1">形式: X20420-＋6桁</p>
-                    )}
                   </label>
-                  <label className="block">
+                  <label className="block min-w-0">
                     <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
-                      <Tag className="w-3 h-3" /> 型番
+                      <Phone className="w-3 h-3" /> 電話番号
                     </span>
-                    <input
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      placeholder="MSZ-… / MR-…"
-                      value={visit.modelNumber || ''}
-                      onChange={(e) => updateVisit(visit.id, { modelNumber: e.target.value })}
-                      onBlur={(e) => updateVisit(visit.id, { modelNumber: normalizeModelNumber(e.target.value) })}
-                    />
+                    <div className="relative">
+                      <input
+                        className="w-full bg-[#1A1D23] border border-ui rounded-lg pl-2.5 py-1.5 pr-9 text-xs outline-none transition-colors focus:border-blue-500/50"
+                        placeholder="電話番号"
+                        value={visit.phoneNumber || ''}
+                        onChange={(e) => updateVisit(visit.id, { phoneNumber: e.target.value })}
+                      />
+                      <CopyActionButton
+                        value={visit.phoneNumber}
+                        label="電話番号をコピー"
+                        className="absolute right-1 top-1/2 -translate-y-1/2"
+                      />
+                    </div>
                   </label>
                 </div>
 
-                <label className="mt-2 block">
-                  <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
-                    <Phone className="w-3 h-3" /> 電話番号
-                  </span>
-                  <div className="relative">
-                    <input
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 pr-10 text-xs outline-none transition-colors focus:border-blue-500/50"
-                      placeholder="電話番号を確認・修正"
-                      value={visit.phoneNumber || ''}
-                      onChange={(e) => updateVisit(visit.id, { phoneNumber: e.target.value })}
-                    />
-                    <CopyActionButton
-                      value={visit.phoneNumber}
-                      label="電話番号をコピー"
-                      className="absolute right-1.5 top-1/2 -translate-y-1/2"
-                    />
-                  </div>
-                </label>
-
-                <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
-                  <div className="bg-slate-800/50 p-2 rounded border border-ui">
-                    <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
+                <div className="mt-2 bg-slate-800/50 p-2 rounded border border-ui">
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <span className="text-[10px] text-secondary font-bold flex items-center gap-1">
                       <Clock className="w-3 h-3" /> 訪問時間
                     </span>
-                    <TimeWindowInput visit={visit} onChange={(u) => updateVisit(visit.id, u)} />
-                  </div>
-                  <div className="bg-slate-800/50 p-2 rounded border border-ui flex flex-col gap-1 justify-between">
-                    <span className="text-[10px] text-secondary font-bold">予定</span>
                     <span
-                      className="text-xs font-bold rounded-full border px-2 py-1"
+                      className="text-[10px] font-bold rounded-full border px-2 py-0.5"
                       style={difficultyBadgeStyle(visit.difficulty)}
                     >
                       {visit.workMinutes}分 / 難易度{difficultyLabel(visit.difficulty)}
                     </span>
                   </div>
+                  <TimeWindowInput visit={visit} onChange={(u) => updateVisit(visit.id, u)} />
                 </div>
               </div>
             );
@@ -3648,6 +3651,69 @@ function ApplianceCategoryToggle({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function SlipNumberInput({
+  value,
+  onChange,
+  className,
+}: {
+  value?: string;
+  onChange: (value: string | undefined) => void;
+  className?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <div className={cn(
+        "flex items-center min-w-0 bg-[#1A1D23] border border-ui rounded-lg focus-within:border-blue-500/50 transition-colors",
+        className
+      )}>
+        <span className="pl-2.5 text-xs font-bold text-secondary select-none shrink-0">{SLIP_NUMBER_PREFIX}</span>
+        <input
+          className="w-full min-w-0 bg-transparent pl-0.5 pr-2 py-1.5 text-xs font-bold outline-none"
+          placeholder="000000"
+          inputMode="numeric"
+          value={slipNumberDigits(value)}
+          onChange={(e) => onChange(composeSlipNumber(e.target.value))}
+          onBlur={(e) => onChange(normalizeSlipNumber(e.target.value))}
+        />
+      </div>
+      {value && !SLIP_NUMBER_PATTERN.test(value) && (
+        <p className="text-[10px] text-yellow-300 font-bold mt-1">6桁の数字で入力してください</p>
+      )}
+    </div>
+  );
+}
+
+function ModelNumberInput({
+  visit,
+  onChange,
+  className,
+}: {
+  visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>;
+  onChange: (modelNumber: string | undefined) => void;
+  className?: string;
+}) {
+  const { prefix, suffix } = splitModelNumber(visit.modelNumber, categoryForVisit(visit));
+  return (
+    <div className={cn(
+      "flex items-center min-w-0 bg-[#1A1D23] border border-ui rounded-lg focus-within:border-blue-500/50 transition-colors",
+      className
+    )}>
+      {prefix && <span className="pl-2 text-xs font-bold text-secondary select-none shrink-0">{prefix}</span>}
+      <input
+        className={cn(
+          "w-full min-w-0 bg-transparent pr-2 py-1.5 text-xs font-bold outline-none",
+          prefix ? "pl-0.5" : "pl-2"
+        )}
+        placeholder={prefix ? '型番' : '型番 (MSZ-…)'}
+        title="型番"
+        value={suffix}
+        onChange={(e) => onChange(composeModelNumber(e.target.value, prefix))}
+        onBlur={(e) => onChange(normalizeModelNumber(composeModelNumber(e.target.value, prefix)))}
+      />
     </div>
   );
 }
