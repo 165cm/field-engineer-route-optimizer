@@ -38,7 +38,9 @@ import {
   Phone,
   Copy,
   Pencil,
-  Check
+  Check,
+  Hash,
+  Tag
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -222,6 +224,25 @@ function displayTaskName(task: Settings['tasks'][number]): string {
   return task.name.replace(`${task.applianceCategory}:`, '').trim();
 }
 
+const SLIP_NUMBER_PREFIX = 'X20420-';
+const SLIP_NUMBER_PATTERN = /^X20420-\d{6}$/;
+
+// 伝票番号は「X20420-」+6桁。読み取りが数字6桁だけ・ハイフン揺れ・全角でも
+// 正規形に寄せる。パターン外の文字列は誤読の可能性があるため、手修正
+// できるようそのまま保持する。
+function normalizeSlipNumber(raw?: string | null): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.normalize('NFKC').trim().toUpperCase();
+  if (!trimmed) return undefined;
+  const match = trimmed.match(/^(?:X?20420[-−ー–]?)?(\d{6})$/);
+  return match ? `${SLIP_NUMBER_PREFIX}${match[1]}` : trimmed;
+}
+
+function normalizeModelNumber(raw?: string | null): string | undefined {
+  const trimmed = typeof raw === 'string' ? raw.normalize('NFKC').trim().toUpperCase() : '';
+  return trimmed || undefined;
+}
+
 function categoryForVisit(visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): string | undefined {
   return visit.applianceCategory || inferApplianceCategoryFromModel(visit.modelNumber);
 }
@@ -239,9 +260,10 @@ function nextVisitForApplianceCategory(
 ): Partial<Visit> {
   const nextOptions = taskOptionsForVisit(tasks, { applianceCategory, modelNumber: undefined });
   const keepsTask = nextOptions.some(task => task.id === visit.taskId);
+  // modelNumber is kept as-is: it doubles as the slip memo, and an explicit
+  // applianceCategory always wins over model-based inference.
   return {
     applianceCategory,
-    modelNumber: undefined,
     taskId: keepsTask ? visit.taskId : undefined,
     ...(!keepsTask ? { workMinutes: 60 } : {}),
   };
@@ -734,6 +756,8 @@ function buildCalendarIcs({
     const task = settings.tasks.find(t => t.id === visit.taskId);
     const summary = `訪問${count}: ${task?.name || '現地作業'}`;
     const description = [
+      visit.slipNumber ? `伝票番号: ${visit.slipNumber}` : '',
+      visit.modelNumber ? `型番: ${visit.modelNumber}` : '',
       `現地滞在予定: ${leg.arrivalTime}-${leg.endTime}`,
       leg.workStartTime && leg.workEndTime ? `実作業: ${leg.workStartTime}-${leg.workEndTime}` : '',
       `ルート案: ${plan.label}`,
@@ -798,6 +822,8 @@ function buildGoogleCalendarRouteEvents({
     const orderIndex = plan.order.findIndex(v => v.id === visit.id) + 1;
     const task = settings.tasks.find(t => t.id === visit.taskId);
     const description = [
+      visit.slipNumber ? `伝票番号: ${visit.slipNumber}` : '',
+      visit.modelNumber ? `型番: ${visit.modelNumber}` : '',
       `現地滞在予定: ${leg.arrivalTime}-${leg.endTime}`,
       leg.workStartTime && leg.workEndTime ? `実作業: ${leg.workStartTime}-${leg.workEndTime}` : '',
       `ルート案: ${plan.label}`,
@@ -977,7 +1003,8 @@ function MainApp() {
       id: v.id,
       address: v.address || '',
       phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
-      modelNumber: undefined,
+      slipNumber: normalizeSlipNumber(v.slipNumber),
+      modelNumber: normalizeModelNumber(v.modelNumber),
       applianceCategory: typeof v.applianceCategory === 'string' ? v.applianceCategory : undefined,
       symptomName: typeof v.symptomName === 'string' ? v.symptomName : undefined,
       taskId: v.taskId,
@@ -1320,7 +1347,10 @@ function MainApp() {
       if (v.id !== id) return v;
       const next = { ...v, ...updates };
       if (updates.modelNumber !== undefined && updates.applianceCategory === undefined) {
-        next.applianceCategory = inferApplianceCategoryFromModel(updates.modelNumber);
+        // Only override when the model prefix is recognized — mid-edit values
+        // ("MS", typo fixes) must not wipe a manually chosen category.
+        const inferred = inferApplianceCategoryFromModel(updates.modelNumber);
+        if (inferred) next.applianceCategory = inferred;
       }
       if (updates.workMinutes !== undefined) {
         next.workMinutes = normalizeWorkMinutes(Number(updates.workMinutes) || 60);
@@ -1399,9 +1429,8 @@ function MainApp() {
 
   const normalizeParsedVisits = (data: any[]): Visit[] => {
     return data.map((v: any) => {
-      const modelNumber = typeof v.modelNumber === 'string' && v.modelNumber.trim()
-        ? v.modelNumber.trim().toUpperCase()
-        : undefined;
+      const slipNumber = normalizeSlipNumber(v.slipNumber);
+      const modelNumber = normalizeModelNumber(v.modelNumber);
       const applianceCategory = (
         typeof v.applianceCategory === 'string' && ['エアコン', '冷蔵庫'].includes(v.applianceCategory)
           ? v.applianceCategory
@@ -1417,7 +1446,8 @@ function MainApp() {
         id: Math.random().toString(36).substr(2, 9),
         address: typeof v.address === 'string' ? v.address : '',
         phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : undefined,
-        modelNumber: undefined,
+        slipNumber,
+        modelNumber,
         applianceCategory,
         symptomName,
         taskId: task?.id,
@@ -2036,6 +2066,33 @@ function MainApp() {
                           />
                         </div>
                      </label>
+
+                     <div className="grid grid-cols-2 gap-3">
+                        <label className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
+                           <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                             <Hash className="w-3.5 h-3.5" /> 伝票番号
+                           </span>
+                           <input
+                             className="w-full bg-slate-900 border border-ui text-white rounded-md px-2.5 py-2 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
+                             placeholder="X20420-000000"
+                             value={visit.slipNumber || ''}
+                             onChange={(e) => handleUpdateVisit(visit.id, { slipNumber: e.target.value })}
+                             onBlur={(e) => handleUpdateVisit(visit.id, { slipNumber: normalizeSlipNumber(e.target.value) })}
+                           />
+                        </label>
+                        <label className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
+                           <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
+                             <Tag className="w-3.5 h-3.5" /> 型番
+                           </span>
+                           <input
+                             className="w-full bg-slate-900 border border-ui text-white rounded-md px-2.5 py-2 text-xs font-bold outline-none focus:border-blue-500/50 transition-colors"
+                             placeholder="MSZ-… / MR-…"
+                             value={visit.modelNumber || ''}
+                             onChange={(e) => handleUpdateVisit(visit.id, { modelNumber: e.target.value })}
+                             onBlur={(e) => handleUpdateVisit(visit.id, { modelNumber: normalizeModelNumber(e.target.value) })}
+                           />
+                        </label>
+                     </div>
 
                      <div className="flex flex-col gap-2 bg-slate-800/50 p-2.5 rounded border border-ui">
                         <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1">
@@ -3168,7 +3225,10 @@ function ParsedVisitsReviewModal({
       if (v.id !== id) return v;
       const next = { ...v, ...updates };
       if (updates.modelNumber !== undefined && updates.applianceCategory === undefined) {
-        next.applianceCategory = inferApplianceCategoryFromModel(updates.modelNumber);
+        // Same guard as handleUpdateVisit: keep the chosen category unless the
+        // model prefix clearly identifies one.
+        const inferred = inferApplianceCategoryFromModel(updates.modelNumber);
+        if (inferred) next.applianceCategory = inferred;
       }
       if (updates.workMinutes !== undefined) {
         next.workMinutes = normalizeWorkMinutes(Number(updates.workMinutes) || 60);
@@ -3198,17 +3258,17 @@ function ParsedVisitsReviewModal({
         className="bg-card w-full max-w-lg flex flex-col max-h-[88vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-4 border-b border-ui flex justify-between items-start bg-slate-900">
+        <div className="px-4 py-3 border-b border-ui flex justify-between items-start bg-slate-900">
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <ClipboardList className="w-4 h-4 text-blue-400" /> 読み取り結果の確認
             </h2>
-            <p className="text-[11px] text-secondary mt-1">機種・作業・住所・電話番号・時間を確認して追加します。</p>
+            <p className="text-[11px] text-secondary mt-0.5">機種・作業・住所・伝票番号・型番・電話・時間を確認して追加します。</p>
           </div>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
           {visits.length === 0 ? (
             <div className="py-8 text-center text-sm text-secondary">追加する候補がありません</div>
           ) : visits.map((visit, idx) => {
@@ -3216,17 +3276,17 @@ function ParsedVisitsReviewModal({
             const taskOptions = taskOptionsForVisit(tasks, visit);
             return (
               <div key={visit.id} className={cn(
-                "rounded-xl border p-3 bg-slate-900/35 relative overflow-hidden",
+                "rounded-xl border p-2.5 bg-slate-900/35 relative overflow-hidden",
                 missingAddress ? "border-red-500/50" : "border-ui"
               )}>
                 <div
                   className="absolute left-0 top-0 w-1 h-full"
                   style={{ background: difficultyColor(visit.difficulty).work }}
                 />
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
                     <span
-                      className="w-6 h-6 rounded-md border flex items-center justify-center text-[10px] font-bold text-white"
+                      className="w-6 h-6 shrink-0 rounded-md border flex items-center justify-center text-[10px] font-bold text-white"
                       style={{
                         background: difficultyColor(visit.difficulty).work,
                         borderColor: difficultyColor(visit.difficulty).work,
@@ -3234,66 +3294,54 @@ function ParsedVisitsReviewModal({
                     >
                       {idx + 1}
                     </span>
-                    <span className="text-xs font-bold text-gray-200">訪問先候補</span>
+                    <ApplianceCategoryToggle
+                      value={visit.applianceCategory}
+                      onChange={(applianceCategory) => updateVisit(
+                        visit.id,
+                        nextVisitForApplianceCategory(visit, applianceCategory, tasks)
+                      )}
+                    />
                   </div>
                   <button
                     onClick={() => removeVisit(visit.id)}
-                    className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded"
+                    className="p-1 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded"
                     title="候補から外す"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
 
-                <div className="mb-3">
-                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                    <Layers className="w-3.5 h-3.5" /> 機種
-                  </span>
-                  <ApplianceCategoryToggle
-                    value={visit.applianceCategory}
-                    onChange={(applianceCategory) => updateVisit(
-                      visit.id,
-                      nextVisitForApplianceCategory(visit, applianceCategory, tasks)
-                    )}
-                  />
+                <div className="mb-2">
+                  <select
+                    className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                    value={visit.taskId || ''}
+                    onChange={(e) => {
+                      const taskId = e.target.value;
+                      const task = tasks.find(t => t.id === taskId);
+                      const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
+                      updateVisit(visit.id, {
+                        taskId,
+                        workMinutes,
+                        difficulty: difficultyForWorkMinutes(workMinutes),
+                      });
+                    }}
+                  >
+                    <option value="" disabled className="text-gray-500">作業を選択...</option>
+                    {taskOptions.map(task => (
+                      <option key={task.id} value={task.id} className="bg-[#1A1D23]">
+                        {displayTaskName(task)}
+                      </option>
+                    ))}
+                  </select>
                   {!visit.taskId && (
-                    <p className="text-[10px] text-yellow-300 font-bold mt-2">作業は手動選択してください</p>
+                    <p className="text-[10px] text-yellow-300 font-bold mt-1">作業は手動選択してください</p>
                   )}
-                </div>
-
-                <div className="mb-3">
-                  <label className="flex-1 block">
-                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                      <ClipboardList className="w-3.5 h-3.5" /> 作業
-                    </span>
-                    <select
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      value={visit.taskId || ''}
-                      onChange={(e) => {
-                        const taskId = e.target.value;
-                        const task = tasks.find(t => t.id === taskId);
-                        const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
-                        updateVisit(visit.id, {
-                          taskId,
-                          workMinutes,
-                          difficulty: difficultyForWorkMinutes(workMinutes),
-                        });
-                      }}
-                    >
-                      <option value="" disabled className="text-gray-500">作業を選択...</option>
-                      {taskOptions.map(task => (
-                        <option key={task.id} value={task.id} className="bg-[#1A1D23]">
-                          {displayTaskName(task)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                 </div>
 
                 <div className="relative">
                   <textarea
                     className={cn(
-                      "w-full bg-[#1A1D23] border rounded-lg p-3 pr-11 text-xs resize-none outline-none transition-colors",
+                      "w-full bg-[#1A1D23] border rounded-lg p-2 pr-10 text-xs resize-none outline-none transition-colors",
                       missingAddress ? "border-red-500/60 focus:border-red-400" : "border-ui focus:border-blue-500/50"
                     )}
                     placeholder="住所を確認・修正"
@@ -3304,23 +3352,53 @@ function ParsedVisitsReviewModal({
                   <CopyActionButton
                     value={visit.address}
                     label="住所をコピー"
-                    className="absolute right-2 top-2"
+                    className="absolute right-1.5 top-1.5"
                   />
                 </div>
                 {missingAddress && (
-                  <p className="flex items-center gap-1.5 text-[10px] font-bold text-red-300 mt-1.5">
+                  <p className="flex items-center gap-1.5 text-[10px] font-bold text-red-300 mt-1">
                     <AlertTriangle className="w-3 h-3 shrink-0" />
                     住所を入力してください
                   </p>
                 )}
 
-                <label className="mt-3 block">
-                  <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                    <Phone className="w-3.5 h-3.5" /> 電話番号
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
+                      <Hash className="w-3 h-3" /> 伝票番号
+                    </span>
+                    <input
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                      placeholder="X20420-000000"
+                      value={visit.slipNumber || ''}
+                      onChange={(e) => updateVisit(visit.id, { slipNumber: e.target.value })}
+                      onBlur={(e) => updateVisit(visit.id, { slipNumber: normalizeSlipNumber(e.target.value) })}
+                    />
+                    {visit.slipNumber && !SLIP_NUMBER_PATTERN.test(visit.slipNumber) && (
+                      <p className="text-[10px] text-yellow-300 font-bold mt-1">形式: X20420-＋6桁</p>
+                    )}
+                  </label>
+                  <label className="block">
+                    <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
+                      <Tag className="w-3 h-3" /> 型番
+                    </span>
+                    <input
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
+                      placeholder="MSZ-… / MR-…"
+                      value={visit.modelNumber || ''}
+                      onChange={(e) => updateVisit(visit.id, { modelNumber: e.target.value })}
+                      onBlur={(e) => updateVisit(visit.id, { modelNumber: normalizeModelNumber(e.target.value) })}
+                    />
+                  </label>
+                </div>
+
+                <label className="mt-2 block">
+                  <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
+                    <Phone className="w-3 h-3" /> 電話番号
                   </span>
                   <div className="relative">
                     <input
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 pr-11 text-xs outline-none transition-colors focus:border-blue-500/50"
+                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-2.5 py-1.5 pr-10 text-xs outline-none transition-colors focus:border-blue-500/50"
                       placeholder="電話番号を確認・修正"
                       value={visit.phoneNumber || ''}
                       onChange={(e) => updateVisit(visit.id, { phoneNumber: e.target.value })}
@@ -3328,20 +3406,20 @@ function ParsedVisitsReviewModal({
                     <CopyActionButton
                       value={visit.phoneNumber}
                       label="電話番号をコピー"
-                      className="absolute right-2 top-1/2 -translate-y-1/2"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2"
                     />
                   </div>
                 </label>
 
-                <div className="mt-3 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
-                  <div className="bg-slate-800/50 p-2.5 rounded border border-ui">
-                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
-                      <Clock className="w-3.5 h-3.5" /> 訪問時間
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
+                  <div className="bg-slate-800/50 p-2 rounded border border-ui">
+                    <span className="text-[10px] text-secondary font-bold flex items-center gap-1 mb-1">
+                      <Clock className="w-3 h-3" /> 訪問時間
                     </span>
                     <TimeWindowInput visit={visit} onChange={(u) => updateVisit(visit.id, u)} />
                   </div>
-                  <div className="bg-slate-800/50 p-2.5 rounded border border-ui flex flex-col gap-2 justify-between">
-                    <span className="text-[10px] text-secondary font-bold uppercase tracking-wider">予定</span>
+                  <div className="bg-slate-800/50 p-2 rounded border border-ui flex flex-col gap-1 justify-between">
+                    <span className="text-[10px] text-secondary font-bold">予定</span>
                     <span
                       className="text-xs font-bold rounded-full border px-2 py-1"
                       style={difficultyBadgeStyle(visit.difficulty)}
@@ -3355,14 +3433,14 @@ function ParsedVisitsReviewModal({
           })}
         </div>
 
-        <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
-          <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">
+        <div className="p-3 border-t border-ui bg-slate-900/80 flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">
             キャンセル
           </button>
           <button
             onClick={() => onConfirm(visits)}
             disabled={validCount === 0}
-            className="flex-[1.6] py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex-[1.6] py-2.5 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {validCount}件を追加
           </button>

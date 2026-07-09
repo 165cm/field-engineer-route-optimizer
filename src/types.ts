@@ -9,6 +9,7 @@ export type Visit = {
   id: string;
   address: string;
   phoneNumber?: string;
+  slipNumber?: string; // "X20420-" + 6 digits (kept editable in case OCR misreads)
   modelNumber?: string;
   applianceCategory?: string;
   symptomName?: string;
