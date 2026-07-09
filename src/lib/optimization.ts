@@ -19,6 +19,16 @@ export function formatTime(minutes: number): string {
 export const PREP_MIN = 15;
 export const CLEANUP_MIN = 15;
 
+// Work durations are always multiples of 20 min, so snapping each work-start up
+// to the next 20-min boundary keeps every start/end on a tidy clock time
+// (…:00 / :20 / :40) and absorbs travel/prep jitter as a little slack.
+export const WORK_START_UNIT_MIN = 20;
+
+export function roundUpToUnit(minutes: number, unit: number = WORK_START_UNIT_MIN): number {
+  if (unit <= 0) return minutes;
+  return Math.ceil(minutes / unit) * unit;
+}
+
 // For N <= this threshold, enumerate all N! permutations (exact optimal).
 // 8! = 40,320 — scores in well under a second.
 // For N > threshold, use nearest-neighbor seeds + 2-opt local search.
@@ -137,6 +147,8 @@ export function calculatePlanForOrder(
     }
 
     currentMinutes += PREP_MIN;
+    // Snap the actual work start up to a clean 20-min boundary.
+    currentMinutes = roundUpToUnit(currentMinutes);
     const workStartTime = formatTime(currentMinutes);
     currentMinutes += visit.workMinutes;
     const workEndTime = formatTime(currentMinutes);

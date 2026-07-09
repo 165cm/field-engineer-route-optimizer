@@ -45,7 +45,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Visit, RoutePlan, Settings, Difficulty, Leg } from './types';
 import { geocodeAddress, getDistanceMatrix } from './services/googleMapsService';
-import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
+import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline, formatTime, roundUpToUnit } from './lib/optimization';
 import type { DistanceMatrixLike } from './services/googleMapsService';
 import { getUserPlan, setUserPlan, getVisitLimit, UserPlan } from './lib/plan';
 import { isDemoMode } from './lib/demoMode';
@@ -350,6 +350,7 @@ type StoredRouteSession = {
   plans: RoutePlan[];
   baseline: Baseline | null;
   customOrder: string[];
+  customLunchAfterIdx: number | null;
   matrix: DistanceMatrixLike;
   activePlanIdx: number;
   visitSignature: string;
@@ -503,6 +504,7 @@ function readStoredRouteSession(visits: Visit[], settings: Settings): StoredRout
       ...parsed,
       plans: orderRoutePlans(parsed.plans),
       customOrder: Array.isArray(parsed.customOrder) ? parsed.customOrder : [],
+      customLunchAfterIdx: Number.isInteger(parsed.customLunchAfterIdx) ? parsed.customLunchAfterIdx : null,
       activePlanIdx: Number.isInteger(parsed.activePlanIdx) ? parsed.activePlanIdx : 0,
       baseline: parsed.baseline || null,
     };
@@ -515,6 +517,7 @@ function persistRouteSession({
   plans,
   baseline,
   customOrder,
+  customLunchAfterIdx,
   matrix,
   visits,
   settings,
@@ -523,6 +526,7 @@ function persistRouteSession({
   plans: RoutePlan[];
   baseline: Baseline | null;
   customOrder: string[];
+  customLunchAfterIdx: number | null;
   matrix: DistanceMatrixLike;
   visits: Visit[];
   settings: Settings;
@@ -533,6 +537,7 @@ function persistRouteSession({
       plans: orderRoutePlans(plans),
       baseline,
       customOrder,
+      customLunchAfterIdx,
       matrix,
       activePlanIdx,
       visitSignature: buildVisitSignature(visits),
@@ -588,31 +593,68 @@ function shiftTime(value: string | undefined, minutes: number): string | undefin
   return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-function insertLunchBreak(rawPlan: RoutePlan, durationMin: number): RoutePlan {
+// Default lunch slot: roughly the route midpoint.
+function defaultLunchAfterIdx(orderLength: number): number {
+  return Math.min(orderLength - 1, Math.floor(orderLength / 2));
+}
+
+// `afterIdxOverride` lets the custom plan pin the lunch after a specific visit
+// (0-based order index); omit it for the automatic midpoint slot.
+function insertLunchBreak(rawPlan: RoutePlan, durationMin: number, afterIdxOverride?: number | null): RoutePlan {
   const plan = normalizeRoutePlan(rawPlan);
   if (durationMin <= 0 || plan.order.length === 0) return plan;
 
   const safeLegs = plan.legs;
   if (safeLegs.length === 0) return plan;
 
-  const afterLegIdx = Math.min(plan.order.length - 1, Math.floor(plan.order.length / 2));
+  const afterLegIdx = afterIdxOverride != null
+    ? Math.min(Math.max(afterIdxOverride, 0), plan.order.length - 1)
+    : defaultLunchAfterIdx(plan.order.length);
   const afterLeg = safeLegs[afterLegIdx];
   const afterVisit = plan.order[afterLegIdx];
   if (!afterLeg || !afterVisit) return plan;
 
   const lunchStart = afterLeg.endTime;
   const lunchEnd = shiftTime(lunchStart, durationMin) || lunchStart;
+
+  // Shift every post-lunch leg by the lunch duration, then re-snap each work
+  // start back onto the 20-min grid. The extra rounding minutes accumulate
+  // (`pad`) so later visits stay consistent with the ones before them.
+  let pad = 0;
+  const shiftedLegs = safeLegs.map((leg, idx) => {
+    if (idx <= afterLegIdx) return { ...leg };
+    const shift = durationMin + pad;
+    const arrivalMin = parseTimeMinutes(leg.arrivalTime) + shift;
+    if (leg.visitId && leg.workStartTime && leg.workEndTime) {
+      const setupGap = parseTimeMinutes(leg.workStartTime) - parseTimeMinutes(leg.arrivalTime);
+      const workLen = parseTimeMinutes(leg.workEndTime) - parseTimeMinutes(leg.workStartTime);
+      const cleanupGap = parseTimeMinutes(leg.endTime) - parseTimeMinutes(leg.workEndTime);
+      const rawWorkStart = arrivalMin + setupGap;
+      const workStartMin = roundUpToUnit(rawWorkStart);
+      pad += workStartMin - rawWorkStart;
+      const workEndMin = workStartMin + workLen;
+      const endMin = workEndMin + cleanupGap;
+      return {
+        ...leg,
+        arrivalTime: formatTime(arrivalMin),
+        workStartTime: formatTime(workStartMin),
+        workEndTime: formatTime(workEndMin),
+        endTime: formatTime(endMin),
+      };
+    }
+    return {
+      ...leg,
+      arrivalTime: formatTime(arrivalMin),
+      endTime: formatTime(parseTimeMinutes(leg.endTime) + shift),
+    };
+  });
+
+  const lastLeg = shiftedLegs[shiftedLegs.length - 1];
   const nextPlan: RoutePlan = {
     ...plan,
-    legs: safeLegs.map((leg, idx) => idx <= afterLegIdx ? { ...leg } : {
-      ...leg,
-      arrivalTime: shiftTime(leg.arrivalTime, durationMin) || leg.arrivalTime,
-      workStartTime: shiftTime(leg.workStartTime, durationMin),
-      workEndTime: shiftTime(leg.workEndTime, durationMin),
-      endTime: shiftTime(leg.endTime, durationMin) || leg.endTime,
-    }),
+    legs: shiftedLegs,
     totalDurationMin: plan.totalDurationMin,
-    endTime: shiftTime(plan.endTime, durationMin) || plan.endTime,
+    endTime: lastLeg ? lastLeg.endTime : (shiftTime(plan.endTime, durationMin) || plan.endTime),
     lunchBreak: {
       afterVisitId: afterVisit.id,
       startTime: lunchStart,
@@ -1088,6 +1130,8 @@ function MainApp() {
   } : null);
   // Visit IDs in the user-chosen order for the "カスタム" plan.
   const [customOrder, setCustomOrder] = useState<string[]>(() => restoredRouteSessionRef.current?.customOrder || []);
+  // Lunch slot for the custom plan (0-based order index). null = auto midpoint.
+  const [customLunchAfterIdx, setCustomLunchAfterIdx] = useState<number | null>(() => restoredRouteSessionRef.current?.customLunchAfterIdx ?? null);
   const [baseline, setBaseline] = useState<Baseline | null>(() => restoredRouteSessionRef.current?.baseline || null);
   const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
   const toggleCompleted = (id: string) => {
@@ -1119,7 +1163,7 @@ function MainApp() {
 
   // Recompute the custom plan when its order changes. Falls back to a no-op
   // if optimization context hasn't been captured yet.
-  const recomputeCustomPlan = (nextOrder: string[]) => {
+  const recomputeCustomPlan = (nextOrder: string[], lunchAfterIdx: number | null) => {
     const ctx = optContextRef.current;
     if (!ctx) return;
     const orderIndices = nextOrder
@@ -1127,7 +1171,8 @@ function MainApp() {
       .filter(i => i > 0);
     const next = insertLunchBreak(
       calculatePlanForOrder(ctx.visits, ctx.settings, ctx.matrix, orderIndices, 'X'),
-      ctx.settings.lunchBreakMinutes || 0
+      ctx.settings.lunchBreakMinutes || 0,
+      lunchAfterIdx
     );
     setPlans(prev => {
       const nextPlans = orderRoutePlans(prev.map(p => (p.id === 'X' ? next : p)));
@@ -1135,6 +1180,7 @@ function MainApp() {
         plans: nextPlans,
         baseline,
         customOrder: nextOrder,
+        customLunchAfterIdx: lunchAfterIdx,
         matrix: ctx.matrix,
         visits: ctx.visits,
         settings: ctx.settings,
@@ -1152,7 +1198,16 @@ function MainApp() {
     const next = customOrder.slice();
     [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
     setCustomOrder(next);
-    recomputeCustomPlan(next);
+    recomputeCustomPlan(next, customLunchAfterIdx);
+  };
+
+  // Shift the custom plan's lunch break earlier/later by one visit slot.
+  const moveCustomLunch = (direction: -1 | 1) => {
+    const currentIdx = customLunchAfterIdx ?? defaultLunchAfterIdx(customOrder.length);
+    const nextIdx = Math.min(Math.max(currentIdx + direction, 0), customOrder.length - 1);
+    if (nextIdx === currentIdx) return;
+    setCustomLunchAfterIdx(nextIdx);
+    recomputeCustomPlan(customOrder, nextIdx);
   };
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [showTasksSettings, setShowTasksSettings] = useState(false);
@@ -1251,10 +1306,12 @@ function MainApp() {
       setBaseline(baselineResult);
       setPlans(optimizedPlans);
       optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
+      setCustomLunchAfterIdx(null);
       persistRouteSession({
         plans: optimizedPlans,
         baseline: baselineResult,
         customOrder: [],
+        customLunchAfterIdx: null,
         matrix,
         visits: updatedVisits,
         settings: updatedSettings,
@@ -1688,6 +1745,7 @@ function MainApp() {
       // Persist context for later re-computation when the user reorders.
       optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
       setCustomOrder(customSeed);
+      setCustomLunchAfterIdx(null);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
 
@@ -1696,6 +1754,7 @@ function MainApp() {
         plans: nextPlans,
         baseline: baselineResult,
         customOrder: customSeed,
+        customLunchAfterIdx: null,
         matrix,
         visits: updatedVisits,
         settings: updatedSettings,
@@ -1817,6 +1876,7 @@ function MainApp() {
       plans: displayPlans,
       baseline,
       customOrder,
+      customLunchAfterIdx,
       matrix: ctx.matrix,
       visits: ctx.visits,
       settings: ctx.settings,
@@ -2507,8 +2567,14 @@ function MainApp() {
                               className="shrink-0 px-2 py-1 rounded text-[10px] font-bold num-font text-white"
                               style={{ background: difficultyColor(visit.difficulty).work }}
                             >
-                              {visitOrderIndex}番 {leg.arrivalTime}着
+                              {visitOrderIndex}番 {leg.workStartTime || leg.arrivalTime}開始
                             </div>
+                            {visit.slipNumber && (
+                              <span className="shrink-0 flex items-center gap-0.5 text-[10px] font-bold num-font text-slate-300 bg-slate-800/80 border border-ui rounded px-1.5 py-1">
+                                <Hash className="w-3 h-3 text-secondary" />
+                                {slipNumberDigits(visit.slipNumber)}
+                              </span>
+                            )}
                             <div className={cn(
                               "status-dot w-2.5 h-2.5 rounded-full shrink-0",
                               leg.status === 'ok' ? "bg-green-400 shadow-[0_0_8px_#4ade80]" : leg.status === 'warning' ? "bg-yellow-400 shadow-[0_0_8px_#fbbf24]" : "bg-red-400 shadow-[0_0_8px_#f87171]"
@@ -2671,11 +2737,36 @@ function MainApp() {
                            animate={{ opacity: 1, y: 0 }}
                             className="bg-orange-500/10 p-4 rounded-xl border border-orange-500/30"
                          >
-                            <div className="flex items-center gap-2 text-orange-400">
-                               <Utensils className="w-3.5 h-3.5" />
-                               <span className="text-[10px] font-bold uppercase tracking-widest">
-                                 昼食・休憩 {lunchBreak.durationMin}分
-                               </span>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 text-orange-400">
+                                 <Utensils className="w-3.5 h-3.5" />
+                                 <span className="text-[10px] font-bold uppercase tracking-widest">
+                                   昼食・休憩 {lunchBreak.durationMin}分
+                                 </span>
+                              </div>
+                              {activePlan.id === 'X' && (() => {
+                                const lunchIdx = activePlan.order.findIndex(v => v.id === lunchBreak.afterVisitId);
+                                return (
+                                  <div className="flex gap-1 shrink-0">
+                                    <button
+                                      onClick={() => moveCustomLunch(-1)}
+                                      disabled={lunchIdx <= 0}
+                                      title="昼食を前の訪問へ"
+                                      className="p-1.5 hover:bg-orange-500/15 disabled:opacity-30 disabled:hover:bg-transparent rounded"
+                                    >
+                                      <ArrowUp className="w-4 h-4 text-orange-300" />
+                                    </button>
+                                    <button
+                                      onClick={() => moveCustomLunch(1)}
+                                      disabled={lunchIdx >= activePlan.order.length - 1}
+                                      title="昼食を次の訪問へ"
+                                      className="p-1.5 hover:bg-orange-500/15 disabled:opacity-30 disabled:hover:bg-transparent rounded"
+                                    >
+                                      <ArrowDown className="w-4 h-4 text-orange-300" />
+                                    </button>
+                                  </div>
+                                );
+                              })()}
                             </div>
                             <p className="text-xs font-bold text-orange-100 mt-2 num-font">
                               {lunchBreak.startTime} - {lunchBreak.endTime}
