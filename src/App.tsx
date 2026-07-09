@@ -758,6 +758,31 @@ function downloadTextFile(filename: string, content: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+// Pulls the 町名 out of a Japanese address: everything after 都道府県 and
+// 市/区 (if present), stopping at the first digit (丁目/番地). Falls back to
+// the cleaned address when the pattern doesn't resolve (non-standard input).
+function extractTownName(address: string): string {
+  let rest = address
+    .replace(/〒?\d{3}-?\d{4}/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+  // Greedy backtracking naturally lands on the true prefecture boundary even
+  // when 都 appears mid-name (e.g. 京都府), since shorter matches are tried
+  // after the longest one fails.
+  rest = rest.replace(/^.{1,4}[都道府県]/, '');
+  rest = rest.replace(/^.{1,10}?市/, '');
+  rest = rest.replace(/^.{1,10}?区/, '');
+  const match = rest.match(/^[^0-9０-９]+/);
+  const town = (match ? match[0] : rest).trim();
+  return town || address.trim();
+}
+
+function buildCalendarEventTitle(visit: Visit, task: Settings['tasks'][number] | undefined): string {
+  const town = extractTownName(visit.address);
+  const symptom = task ? displayTaskName(task) : '現地作業';
+  return `${town} - ${symptom}`;
+}
+
 function buildCalendarIcs({
   plan,
   settings,
@@ -788,9 +813,9 @@ function buildCalendarIcs({
 
     count += 1;
     const task = settings.tasks.find(t => t.id === visit.taskId);
-    const summary = `訪問${count}: ${task?.name || '現地作業'}`;
+    const summary = buildCalendarEventTitle(visit, task);
     const description = [
-      visit.slipNumber ? `伝票番号: ${visit.slipNumber}` : '',
+      visit.slipNumber ? `伝票番号: ${slipNumberDigits(visit.slipNumber)}` : '',
       visit.modelNumber ? `型番: ${visit.modelNumber}` : '',
       `現地滞在予定: ${leg.arrivalTime}-${leg.endTime}`,
       leg.workStartTime && leg.workEndTime ? `実作業: ${leg.workStartTime}-${leg.workEndTime}` : '',
@@ -853,10 +878,9 @@ function buildGoogleCalendarRouteEvents({
     const endDateTime = formatGoogleCalendarDateTime(endDate, leg.endTime);
     if (!startDateTime || !endDateTime) return;
 
-    const orderIndex = plan.order.findIndex(v => v.id === visit.id) + 1;
     const task = settings.tasks.find(t => t.id === visit.taskId);
     const description = [
-      visit.slipNumber ? `伝票番号: ${visit.slipNumber}` : '',
+      visit.slipNumber ? `伝票番号: ${slipNumberDigits(visit.slipNumber)}` : '',
       visit.modelNumber ? `型番: ${visit.modelNumber}` : '',
       `現地滞在予定: ${leg.arrivalTime}-${leg.endTime}`,
       leg.workStartTime && leg.workEndTime ? `実作業: ${leg.workStartTime}-${leg.workEndTime}` : '',
@@ -864,7 +888,7 @@ function buildGoogleCalendarRouteEvents({
     ].filter(Boolean).join('\n');
 
     events.push({
-      summary: `訪問${orderIndex}: ${task?.name || '現地作業'}`,
+      summary: buildCalendarEventTitle(visit, task),
       location: visit.address,
       description,
       startDateTime,
