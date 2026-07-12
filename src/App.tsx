@@ -222,6 +222,14 @@ function displayTaskName(task: Settings['tasks'][number]): string {
   return task.name.replace(`${task.applianceCategory}:`, '').trim();
 }
 
+function taskDetailName(task: Settings['tasks'][number]): string {
+  return displayTaskName(task);
+}
+
+function taskFullPath(task: Settings['tasks'][number]): string {
+  return [task.applianceCategory, task.majorCategory, taskDetailName(task)].filter(Boolean).join(' / ');
+}
+
 function categoryForVisit(visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): string | undefined {
   return visit.applianceCategory || inferApplianceCategoryFromModel(visit.modelNumber);
 }
@@ -1975,7 +1983,7 @@ function MainApp() {
                       >
                         <option value="" disabled className="text-gray-500">作業を選択...</option>
                         {taskOptions.map(t => (
-                          <option key={t.id} value={t.id} className="bg-[#1A1D23]">{displayTaskName(t)}</option>
+                          <option key={t.id} value={t.id} className="bg-[#1A1D23]">{t.majorCategory ? `${t.majorCategory} / ${displayTaskName(t)}` : displayTaskName(t)}</option>
                         ))}
                       </select>
                     </div>
@@ -3283,7 +3291,7 @@ function ParsedVisitsReviewModal({
                       <option value="" disabled className="text-gray-500">作業を選択...</option>
                       {taskOptions.map(task => (
                         <option key={task.id} value={task.id} className="bg-[#1A1D23]">
-                          {displayTaskName(task)}
+                          {task.majorCategory ? `${task.majorCategory} / ${displayTaskName(task)}` : displayTaskName(task)}
                         </option>
                       ))}
                     </select>
@@ -3581,30 +3589,62 @@ function StatusBadge({ status }: { status: 'ok' | 'warning' | 'violation' }) {
 }
 
 function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
-  const [tasks, setTasks] = useState((settings.tasks || []).map(task => ({
+  type TaskDraft = Settings['tasks'][number];
+  const normalizeTaskDraft = (task: TaskDraft): TaskDraft => ({
     ...task,
+    name: task.name || '未設定の作業',
     defaultMinutes: normalizeWorkMinutes(task.defaultMinutes),
-  })));
+    applianceCategory: task.applianceCategory || undefined,
+    majorCategory: task.majorCategory || undefined,
+  });
+
+  const [tasks, setTasks] = useState<TaskDraft[]>((settings.tasks || []).map(normalizeTaskDraft));
+  const [newApplianceCategory, setNewApplianceCategory] = useState(APPLIANCE_CATEGORIES[0]);
+  const [newMajorCategory, setNewMajorCategory] = useState('');
   const [newName, setNewName] = useState('');
   const [newMinutes, setNewMinutes] = useState('60');
-  // id of task currently being edited inline, null if none
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editApplianceCategory, setEditApplianceCategory] = useState('');
+  const [editMajorCategory, setEditMajorCategory] = useState('');
   const [editName, setEditName] = useState('');
   const [editMinutes, setEditMinutes] = useState('');
 
-  const startEdit = (task: { id: string; name: string; defaultMinutes: number }) => {
+  const groupedTasks = tasks.reduce<Record<string, Record<string, TaskDraft[]>>>((groups, task) => {
+    const appliance = task.applianceCategory || '未分類';
+    const major = task.majorCategory || '未分類';
+    groups[appliance] = groups[appliance] || {};
+    groups[appliance][major] = groups[appliance][major] || [];
+    groups[appliance][major].push(task);
+    return groups;
+  }, {});
+
+  const startEdit = (task: TaskDraft) => {
     setEditingId(task.id);
-    setEditName(task.name);
+    setEditApplianceCategory(task.applianceCategory || APPLIANCE_CATEGORIES[0]);
+    setEditMajorCategory(task.majorCategory || '');
+    setEditName(taskDetailName(task));
     setEditMinutes(String(task.defaultMinutes));
+  };
+
+  const buildTaskName = (applianceCategory: string, detailName: string) => {
+    const detail = detailName.trim();
+    const appliance = applianceCategory.trim();
+    return appliance && !detail.startsWith(`${appliance}:`) ? `${appliance}: ${detail}` : detail;
   };
 
   const buildCommittedTasks = () => {
     if (!editingId) return tasks;
-    const trimmedName = editName.trim();
-    if (!trimmedName) return tasks;
+    const detailName = editName.trim();
+    if (!detailName) return tasks;
     return tasks.map(t =>
       t.id === editingId
-        ? { ...t, name: trimmedName, defaultMinutes: normalizeWorkMinutes(parseInt(editMinutes) || t.defaultMinutes) }
+        ? normalizeTaskDraft({
+            ...t,
+            applianceCategory: editApplianceCategory.trim() || undefined,
+            majorCategory: editMajorCategory.trim() || undefined,
+            name: buildTaskName(editApplianceCategory, detailName),
+            defaultMinutes: parseInt(editMinutes) || t.defaultMinutes,
+          })
         : t
     );
   };
@@ -3616,9 +3656,22 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
   };
 
   const handleAdd = () => {
-    if (!newName.trim()) return;
-    setTasks([...tasks, { id: Date.now().toString(), name: newName.trim(), defaultMinutes: normalizeWorkMinutes(parseInt(newMinutes) || 60), source: 'manual' }]);
+    const detailName = newName.trim();
+    if (!detailName || !newMajorCategory.trim()) return;
+    const applianceCategory = newApplianceCategory.trim();
+    setTasks([
+      ...tasks,
+      normalizeTaskDraft({
+        id: Date.now().toString(),
+        applianceCategory,
+        majorCategory: newMajorCategory.trim(),
+        name: buildTaskName(applianceCategory, detailName),
+        defaultMinutes: parseInt(newMinutes) || 60,
+        source: 'manual',
+      }),
+    ]);
     setNewName('');
+    setNewMajorCategory('');
     setNewMinutes('60');
   };
 
@@ -3628,7 +3681,7 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
   };
 
   const handleSave = () => {
-    const nextTasks = buildCommittedTasks();
+    const nextTasks = buildCommittedTasks().map(normalizeTaskDraft);
     onSave({ ...settings, tasks: nextTasks });
   };
 
@@ -3643,115 +3696,80 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
         initial={{ scale: 0.95 }}
         animate={{ scale: 1 }}
         exit={{ scale: 0.95 }}
-        className="bg-card w-full max-w-md flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
+        className="bg-card w-full max-w-3xl flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
       >
-        <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
-          <h2 className="text-sm font-bold text-white flex items-center gap-2">作業時間の設定</h2>
+        <div className="p-4 border-b border-ui flex justify-between items-start bg-slate-900">
+          <div>
+            <h2 className="text-sm font-bold text-white flex items-center gap-2"><Layers className="w-4 h-4 text-blue-400" /> 作業内容・作業時間の設定</h2>
+            <p className="text-[11px] text-secondary mt-1">大カテゴリ（機器）→ 中カテゴリ（症状の大分類）→ 小カテゴリ（症状の詳細）＋想定作業時間で管理します。</p>
+          </div>
           <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
-           {tasks.map(task => (
-             <div key={task.id} className={cn(
-               "bg-slate-800/50 p-3 rounded-xl border transition-colors",
-               editingId === task.id ? "border-blue-500/50" : "border-ui"
-             )}>
-               {editingId === task.id ? (
-                 <div className="flex gap-2 items-center">
-                   <input
-                     autoFocus
-                     className="flex-1 bg-[#1A1D23] border border-blue-500/50 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:border-blue-400"
-                     value={editName}
-                     onChange={(e) => setEditName(e.target.value)}
-                     onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingId(null); }}
-                     placeholder="作業名"
-                   />
-                   <select
-                     className="w-20 bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-sm font-bold outline-none"
-                     value={editMinutes}
-                     onChange={(e) => setEditMinutes(e.target.value)}
-                   >
-                     {WORK_MINUTE_OPTIONS.map(minutes => (
-                       <option key={minutes} value={minutes} className="bg-[#1A1D23]">{minutes}</option>
-                     ))}
-                   </select>
-                   <span className="text-xs text-secondary">分</span>
-                   <button
-                     onClick={commitEdit}
-                     className="p-2 text-green-400 hover:text-green-300 bg-green-400/10 hover:bg-green-400/20 rounded-lg transition-colors"
-                     title="確定"
-                   >
-                     <Check className="w-4 h-4" />
-                   </button>
-                   <button
-                     onClick={() => setEditingId(null)}
-                     className="p-2 text-secondary hover:text-white rounded-lg transition-colors"
-                     title="キャンセル"
-                   >
-                     <X className="w-4 h-4" />
-                   </button>
-                 </div>
-               ) : (
-                 <div className="flex justify-between items-center">
-                   <div>
-                     <div className="flex items-center gap-1.5 flex-wrap">
-                       {task.applianceCategory && <Badge>{task.applianceCategory}</Badge>}
-                       <h4 className="text-sm font-bold text-white">{displayTaskName(task)}</h4>
-                     </div>
-                     <p className="text-[10px] text-secondary mt-1">
-                       作業時間: {task.defaultMinutes}分 / 難易度{difficultyLabel(difficultyForWorkMinutes(task.defaultMinutes))}
-                     </p>
-                   </div>
-                   <div className="flex items-center gap-1">
-                     <button
-                       onClick={() => startEdit(task)}
-                       className="p-2 text-blue-400 hover:text-blue-300 bg-blue-400/10 hover:bg-blue-400/20 rounded-lg transition-colors"
-                       title="編集"
-                     >
-                       <Pencil className="w-4 h-4" />
-                     </button>
-                     <button
-                       onClick={() => handleRemove(task.id)}
-                       className="p-2 text-red-400 hover:text-red-300 bg-red-400/10 hover:bg-red-400/20 rounded-lg transition-colors"
-                       title="削除"
-                     >
-                       <Trash2 className="w-4 h-4" />
-                     </button>
-                   </div>
-                 </div>
-               )}
-             </div>
-           ))}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+          {Object.entries(groupedTasks).map(([appliance, majors]) => (
+            <section key={appliance} className="rounded-xl border border-ui bg-slate-900/30 overflow-hidden">
+              <div className="px-3 py-2 bg-slate-800/70 border-b border-ui flex items-center gap-2">
+                <Badge>{appliance}</Badge>
+                <span className="text-xs font-bold text-white">大カテゴリ</span>
+              </div>
+              <div className="p-3 space-y-3">
+                {Object.entries(majors).map(([major, majorTasks]) => (
+                  <div key={`${appliance}-${major}`} className="rounded-lg border border-ui bg-slate-950/20">
+                    <div className="px-3 py-2 border-b border-ui text-xs font-bold text-blue-200">{major}</div>
+                    <div className="divide-y divide-slate-800/80">
+                      {majorTasks.map(task => (
+                        <div key={task.id} className={cn("p-3 transition-colors", editingId === task.id && "bg-blue-500/5")}>
+                          {editingId === task.id ? (
+                            <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_1fr_96px_auto] gap-2 items-center">
+                              <select className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-xs font-bold outline-none" value={editApplianceCategory} onChange={(e) => setEditApplianceCategory(e.target.value)}>
+                                {APPLIANCE_CATEGORIES.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
+                              </select>
+                              <input className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-3 py-2 text-xs font-bold outline-none" value={editMajorCategory} onChange={(e) => setEditMajorCategory(e.target.value)} placeholder="中カテゴリ" />
+                              <input autoFocus className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-3 py-2 text-xs font-bold outline-none" value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingId(null); }} placeholder="小カテゴリ" />
+                              <select className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-xs font-bold outline-none" value={editMinutes} onChange={(e) => setEditMinutes(e.target.value)}>
+                                {WORK_MINUTE_OPTIONS.map(minutes => <option key={minutes} value={minutes} className="bg-[#1A1D23]">{minutes}分</option>)}
+                              </select>
+                              <div className="flex gap-1">
+                                <button onClick={commitEdit} className="p-2 text-green-400 bg-green-400/10 rounded-lg" title="確定"><Check className="w-4 h-4" /></button>
+                                <button onClick={() => setEditingId(null)} className="p-2 text-secondary hover:text-white rounded-lg" title="キャンセル"><X className="w-4 h-4" /></button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex justify-between gap-3 items-center">
+                              <div className="min-w-0">
+                                <h4 className="text-sm font-bold text-white truncate">{taskDetailName(task)}</h4>
+                                <p className="text-[10px] text-secondary mt-1">{taskFullPath(task)} / 想定作業時間: {task.defaultMinutes}分 / 難易度{difficultyLabel(difficultyForWorkMinutes(task.defaultMinutes))}</p>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button onClick={() => startEdit(task)} className="p-2 text-blue-400 bg-blue-400/10 rounded-lg" title="編集"><Pencil className="w-4 h-4" /></button>
+                                <button onClick={() => handleRemove(task.id)} className="p-2 text-red-400 bg-red-400/10 rounded-lg" title="削除"><Trash2 className="w-4 h-4" /></button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
 
-           <div className="mt-6 border-t border-ui pt-4">
-             <h4 className="text-xs font-bold text-secondary uppercase tracking-widest mb-3">新規追加</h4>
-             <div className="flex gap-2">
-               <input
-                 className="flex-1 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none placeholder:text-slate-600 font-bold"
-                 value={newName}
-                 onChange={(e) => setNewName(e.target.value)}
-                 onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
-                 placeholder="作業名 (例: 点検)"
-               />
-               <select
-                 className="w-20 bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-sm focus:border-blue-500/50 outline-none text-right"
-                 value={newMinutes}
-                 onChange={(e) => setNewMinutes(e.target.value)}
-               >
-                 {WORK_MINUTE_OPTIONS.map(minutes => (
-                   <option key={minutes} value={minutes} className="bg-[#1A1D23]">{minutes}</option>
-                 ))}
-               </select>
-               <span className="flex items-center text-sm text-secondary -ml-1">分</span>
-               <button
-                 onClick={handleAdd}
-                 disabled={!newName.trim()}
-                 className="px-4 py-2 bg-blue-600 disabled:opacity-50 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg"
-               >
-                 追加
-               </button>
-             </div>
-           </div>
+          <div className="border-t border-ui pt-4">
+            <h4 className="text-xs font-bold text-secondary uppercase tracking-widest mb-3">新規追加</h4>
+            <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_1fr_96px_auto] gap-2">
+              <select className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none" value={newApplianceCategory} onChange={(e) => setNewApplianceCategory(e.target.value)}>
+                {APPLIANCE_CATEGORIES.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
+              </select>
+              <input className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none placeholder:text-slate-600" value={newMajorCategory} onChange={(e) => setNewMajorCategory(e.target.value)} placeholder="中カテゴリ（例: 水漏れ）" />
+              <input className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none placeholder:text-slate-600" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }} placeholder="小カテゴリ（例: パイプ詰まり）" />
+              <select className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none" value={newMinutes} onChange={(e) => setNewMinutes(e.target.value)}>
+                {WORK_MINUTE_OPTIONS.map(minutes => <option key={minutes} value={minutes} className="bg-[#1A1D23]">{minutes}分</option>)}
+              </select>
+              <button onClick={handleAdd} disabled={!newName.trim() || !newMajorCategory.trim()} className="px-4 py-2 bg-blue-600 disabled:opacity-50 hover:bg-blue-500 rounded-lg text-xs font-bold transition-colors shadow-lg">追加</button>
+            </div>
+          </div>
         </div>
 
         <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
