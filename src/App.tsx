@@ -66,7 +66,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
-const APP_VERSION = 'v1.5';
+const APP_VERSION = 'v1.7';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -167,6 +167,7 @@ const TIME_OPTIONS = Array.from({ length: 25 }).map((_, i) => {
 });
 const WORK_MINUTE_OPTIONS = [20, 40, 60, 80, 100, 120];
 const APPLIANCE_CATEGORIES = ['エアコン', '冷蔵庫'];
+const TASK_APPLIANCE_CATEGORIES = [...APPLIANCE_CATEGORIES, '共通'];
 
 function normalizeWorkMinutes(minutes: number): number {
   const value = Number(minutes) || 60;
@@ -237,7 +238,28 @@ function categoryForVisit(visit: Pick<Visit, 'modelNumber' | 'applianceCategory'
 function taskOptionsForVisit(tasks: Settings['tasks'], visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): Settings['tasks'] {
   const category = categoryForVisit(visit);
   if (!category) return tasks;
-  return tasks.filter(task => task.applianceCategory === category);
+  return tasks.filter(task => task.applianceCategory === category || task.applianceCategory === '共通');
+}
+
+function taskMajorCategoriesForVisit(tasks: Settings['tasks'], visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>): string[] {
+  return Array.from(new Set(
+    taskOptionsForVisit(tasks, visit)
+      .map(task => task.majorCategory)
+      .filter((category): category is string => Boolean(category))
+  ));
+}
+
+function selectedTaskMajorCategory(visit: Pick<Visit, 'taskId' | 'taskMajorCategory'>, tasks: Settings['tasks']): string {
+  return tasks.find(task => task.id === visit.taskId)?.majorCategory || visit.taskMajorCategory || '';
+}
+
+function taskOptionsForMajorCategory(
+  tasks: Settings['tasks'],
+  visit: Pick<Visit, 'modelNumber' | 'applianceCategory'>,
+  majorCategory: string
+): Settings['tasks'] {
+  if (!majorCategory) return [];
+  return taskOptionsForVisit(tasks, visit).filter(task => task.majorCategory === majorCategory);
 }
 
 function nextVisitForApplianceCategory(
@@ -250,6 +272,7 @@ function nextVisitForApplianceCategory(
   return {
     applianceCategory,
     modelNumber: undefined,
+    taskMajorCategory: keepsTask ? selectedTaskMajorCategory(visit, tasks) : undefined,
     taskId: keepsTask ? visit.taskId : undefined,
     ...(!keepsTask ? { workMinutes: 60 } : {}),
   };
@@ -988,6 +1011,7 @@ function MainApp() {
       modelNumber: undefined,
       applianceCategory: typeof v.applianceCategory === 'string' ? v.applianceCategory : undefined,
       symptomName: typeof v.symptomName === 'string' ? v.symptomName : undefined,
+      taskMajorCategory: typeof v.taskMajorCategory === 'string' ? v.taskMajorCategory : undefined,
       taskId: v.taskId,
       timeWindow: v.timeWindow,
       workMinutes: normalizeWorkMinutes(Number(v.workMinutes) || 60),
@@ -1428,6 +1452,7 @@ function MainApp() {
         modelNumber: undefined,
         applianceCategory,
         symptomName,
+        taskMajorCategory: task?.majorCategory,
         taskId: task?.id,
         workMinutes,
         difficulty: difficultyForWorkMinutes(workMinutes),
@@ -1934,7 +1959,9 @@ function MainApp() {
                 const validation = getVisitValidation(visit);
                 const hasErrors = validation.errors.length > 0;
                 const hasWarnings = !hasErrors && validation.warnings.length > 0;
-                const taskOptions = taskOptionsForVisit(settings.tasks, visit);
+                const majorCategories = taskMajorCategoriesForVisit(settings.tasks, visit);
+                const selectedMajorCategory = selectedTaskMajorCategory(visit, settings.tasks);
+                const taskOptions = taskOptionsForMajorCategory(settings.tasks, visit, selectedMajorCategory);
                 return (
                 <div
                   key={visit.id}
@@ -1967,25 +1994,42 @@ function MainApp() {
                           )}
                         />
                       </div>
-                      <select 
-                        className="bg-transparent border-none text-sm font-bold focus:ring-0 w-full appearance-none cursor-pointer"
-                        value={visit.taskId || ''}
-                        onChange={(e) => {
-                          const tId = e.target.value;
-                          const task = settings.tasks.find(t => t.id === tId);
-                          const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
-                          handleUpdateVisit(visit.id, {
-                            taskId: tId,
-                            workMinutes,
-                            difficulty: difficultyForWorkMinutes(workMinutes)
-                          });
-                        }}
-                      >
-                        <option value="" disabled className="text-gray-500">作業を選択...</option>
-                        {taskOptions.map(t => (
-                          <option key={t.id} value={t.id} className="bg-[#1A1D23]">{t.majorCategory ? `${t.majorCategory} / ${displayTaskName(t)}` : displayTaskName(t)}</option>
-                        ))}
-                      </select>
+                      <div className="grid grid-cols-2 gap-2 min-w-0">
+                        <select
+                          aria-label="中項目を選択"
+                          className="min-w-0 w-full bg-[#1A1D23] border border-ui rounded-lg px-2 py-1.5 text-[11px] font-bold outline-none cursor-pointer whitespace-nowrap truncate focus:border-blue-500/50"
+                          value={selectedMajorCategory}
+                          onChange={(e) => handleUpdateVisit(visit.id, {
+                            taskMajorCategory: e.target.value,
+                            taskId: undefined,
+                            workMinutes: 60,
+                            difficulty: difficultyForWorkMinutes(60),
+                          })}
+                        >
+                          <option value="" disabled className="text-gray-500">① 中項目...</option>
+                          {majorCategories.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
+                        </select>
+                        <select
+                          aria-label="小項目を選択"
+                          className="min-w-0 w-full bg-[#1A1D23] border border-ui rounded-lg px-2 py-1.5 text-[11px] font-bold outline-none cursor-pointer whitespace-nowrap truncate focus:border-blue-500/50 disabled:opacity-50"
+                          value={visit.taskId || ''}
+                          disabled={!selectedMajorCategory}
+                          onChange={(e) => {
+                            const tId = e.target.value;
+                            const task = settings.tasks.find(t => t.id === tId);
+                            const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
+                            handleUpdateVisit(visit.id, {
+                              taskMajorCategory: task?.majorCategory || selectedMajorCategory,
+                              taskId: tId,
+                              workMinutes,
+                              difficulty: difficultyForWorkMinutes(workMinutes)
+                            });
+                          }}
+                        >
+                          <option value="" disabled className="text-gray-500">② 小項目...</option>
+                          {taskOptions.map(t => <option key={t.id} value={t.id} className="bg-[#1A1D23]">{displayTaskName(t)}</option>)}
+                        </select>
+                      </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={() => handleDeleteVisit(visit.id)} className="p-1 hover:bg-red-500/10 rounded">
@@ -3221,7 +3265,9 @@ function ParsedVisitsReviewModal({
             <div className="py-8 text-center text-sm text-secondary">追加する候補がありません</div>
           ) : visits.map((visit, idx) => {
             const missingAddress = !visit.address.trim();
-            const taskOptions = taskOptionsForVisit(tasks, visit);
+            const majorCategories = taskMajorCategoriesForVisit(tasks, visit);
+            const selectedMajorCategory = selectedTaskMajorCategory(visit, tasks);
+            const taskOptions = taskOptionsForMajorCategory(tasks, visit, selectedMajorCategory);
             return (
               <div key={visit.id} className={cn(
                 "rounded-xl border p-3 bg-slate-900/35 relative overflow-hidden",
@@ -3270,32 +3316,47 @@ function ParsedVisitsReviewModal({
                 </div>
 
                 <div className="mb-3">
-                  <label className="flex-1 block">
+                  <div className="flex-1 block">
                     <span className="text-[10px] text-secondary font-bold uppercase tracking-wider flex items-center gap-1 mb-2">
                       <ClipboardList className="w-3.5 h-3.5" /> 作業
                     </span>
-                    <select
-                      className="w-full bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none transition-colors focus:border-blue-500/50"
-                      value={visit.taskId || ''}
-                      onChange={(e) => {
-                        const taskId = e.target.value;
-                        const task = tasks.find(t => t.id === taskId);
-                        const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
-                        updateVisit(visit.id, {
-                          taskId,
-                          workMinutes,
-                          difficulty: difficultyForWorkMinutes(workMinutes),
-                        });
-                      }}
-                    >
-                      <option value="" disabled className="text-gray-500">作業を選択...</option>
-                      {taskOptions.map(task => (
-                        <option key={task.id} value={task.id} className="bg-[#1A1D23]">
-                          {task.majorCategory ? `${task.majorCategory} / ${displayTaskName(task)}` : displayTaskName(task)}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                    <div className="grid grid-cols-2 gap-2 min-w-0">
+                      <select
+                        aria-label="中項目を選択"
+                        className="min-w-0 w-full bg-[#1A1D23] border border-ui rounded-lg px-2 py-2 text-[11px] font-bold outline-none whitespace-nowrap truncate focus:border-blue-500/50"
+                        value={selectedMajorCategory}
+                        onChange={(e) => updateVisit(visit.id, {
+                          taskMajorCategory: e.target.value,
+                          taskId: undefined,
+                          workMinutes: 60,
+                          difficulty: difficultyForWorkMinutes(60),
+                        })}
+                      >
+                        <option value="" disabled className="text-gray-500">① 中項目...</option>
+                        {majorCategories.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
+                      </select>
+                      <select
+                        aria-label="小項目を選択"
+                        className="min-w-0 w-full bg-[#1A1D23] border border-ui rounded-lg px-2 py-2 text-[11px] font-bold outline-none whitespace-nowrap truncate focus:border-blue-500/50 disabled:opacity-50"
+                        value={visit.taskId || ''}
+                        disabled={!selectedMajorCategory}
+                        onChange={(e) => {
+                          const taskId = e.target.value;
+                          const task = tasks.find(t => t.id === taskId);
+                          const workMinutes = task ? task.defaultMinutes : visit.workMinutes;
+                          updateVisit(visit.id, {
+                            taskMajorCategory: task?.majorCategory || selectedMajorCategory,
+                            taskId,
+                            workMinutes,
+                            difficulty: difficultyForWorkMinutes(workMinutes),
+                          });
+                        }}
+                      >
+                        <option value="" disabled className="text-gray-500">② 小項目...</option>
+                        {taskOptions.map(task => <option key={task.id} value={task.id} className="bg-[#1A1D23]">{displayTaskName(task)}</option>)}
+                      </select>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="relative">
@@ -3723,7 +3784,7 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
                           {editingId === task.id ? (
                             <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_1fr_96px_auto] gap-2 items-center">
                               <select className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-2 py-2 text-xs font-bold outline-none" value={editApplianceCategory} onChange={(e) => setEditApplianceCategory(e.target.value)}>
-                                {APPLIANCE_CATEGORIES.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
+                                {TASK_APPLIANCE_CATEGORIES.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
                               </select>
                               <input className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-3 py-2 text-xs font-bold outline-none" value={editMajorCategory} onChange={(e) => setEditMajorCategory(e.target.value)} placeholder="中カテゴリ" />
                               <input autoFocus className="bg-[#1A1D23] border border-blue-500/50 rounded-lg px-3 py-2 text-xs font-bold outline-none" value={editName} onChange={(e) => setEditName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditingId(null); }} placeholder="小カテゴリ" />
@@ -3760,7 +3821,7 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
             <h4 className="text-xs font-bold text-secondary uppercase tracking-widest mb-3">新規追加</h4>
             <div className="grid grid-cols-1 md:grid-cols-[120px_1fr_1fr_96px_auto] gap-2">
               <select className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none" value={newApplianceCategory} onChange={(e) => setNewApplianceCategory(e.target.value)}>
-                {APPLIANCE_CATEGORIES.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
+                {TASK_APPLIANCE_CATEGORIES.map(category => <option key={category} value={category} className="bg-[#1A1D23]">{category}</option>)}
               </select>
               <input className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none placeholder:text-slate-600" value={newMajorCategory} onChange={(e) => setNewMajorCategory(e.target.value)} placeholder="中カテゴリ（例: 水漏れ）" />
               <input className="bg-[#1A1D23] border border-ui rounded-lg px-3 py-2 text-xs font-bold outline-none placeholder:text-slate-600" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }} placeholder="小カテゴリ（例: パイプ詰まり）" />

@@ -1,30 +1,36 @@
 import { TaskType } from '../types';
 
 export const REPAIR_SYMPTOM_TASKS: TaskType[] = [
-  { id: 'sym-aircon-temp-humidity-sensor', name: 'エアコン: 温湿度センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '発生', source: 'symptom-master' },
   { id: 'sym-aircon-flap-not-moving', name: 'エアコン: フラップが動かない', defaultMinutes: 120, applianceCategory: 'エアコン', majorCategory: '内機・部品交換', source: 'symptom-master' },
-  { id: 'sym-aircon-flap-damage', name: 'エアコン: フラップ破損', defaultMinutes: 20, applianceCategory: 'エアコン', majorCategory: '破損・変形', source: 'symptom-master' },
+  { id: 'sym-aircon-gas-leak', name: 'エアコン: ガス漏れ→熱交', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '冷媒系', source: 'symptom-master' },
   { id: 'sym-aircon-nozzle-crack', name: 'エアコン: ノズル割れ', defaultMinutes: 120, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
-  { id: 'sym-aircon-pipe-clogged', name: 'エアコン: パイプ詰まり', defaultMinutes: 40, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
-  { id: 'sym-aircon-inspection-estimate', name: 'エアコン: 点検・見積りのみ', defaultMinutes: 20, applianceCategory: 'エアコン', majorCategory: '点検/診断', source: 'symptom-master' },
-  { id: 'sym-aircon-board-sensor', name: 'エアコン: 基板・センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '電装系不良', source: 'symptom-master' },
-  { id: 'sym-aircon-gas-leak', name: 'エアコン: ガス漏れ・冷媒不足', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '冷媒系', source: 'symptom-master' },
+  { id: 'sym-aircon-pipe-clogged', name: 'エアコン: 排水パイプ詰まり', defaultMinutes: 40, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
+  { id: 'sym-aircon-dew-splash', name: 'エアコン: 露飛び', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
+  { id: 'sym-aircon-temp-humidity-sensor', name: 'エアコン: 温湿度センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '発生', source: 'symptom-master' },
   { id: 'sym-aircon-filter-damage', name: 'エアコン: フィルター破損', defaultMinutes: 20, applianceCategory: 'エアコン', majorCategory: '破損・変形', source: 'symptom-master' },
-  { id: 'sym-fridge-inspection-estimate', name: '冷蔵庫: 点検・見積りのみ', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: '点検/診断', source: 'symptom-master' },
-  { id: 'sym-fridge-door-not-closing', name: '冷蔵庫: ドア閉まらず', defaultMinutes: 40, applianceCategory: '冷蔵庫', majorCategory: '破損・変形', source: 'symptom-master' },
-  { id: 'sym-fridge-heater-plate', name: '冷蔵庫: ヒーター板交換（扉開閉不良）', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: 'パッキン交換', source: 'symptom-master' },
-  { id: 'sym-fridge-packing-replace', name: '冷蔵庫: パッキンー交換', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: 'パッキン交換', source: 'symptom-master' },
-  { id: 'sym-fridge-parts-ended', name: '冷蔵庫: 部品供給終了', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: '修理不可', source: 'symptom-master' },
+  { id: 'sym-aircon-flap-damage', name: 'エアコン: フラップ破損', defaultMinutes: 20, applianceCategory: 'エアコン', majorCategory: '破損・変形', source: 'symptom-master' },
+  { id: 'sym-aircon-board-sensor', name: 'エアコン: 基板・センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '電装系不良', source: 'symptom-master' },
+  { id: 'sym-aircon-outdoor-inverter-board', name: 'エアコン: 室外機基板不良(インバータ)', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '電装系不良', source: 'symptom-master' },
+  { id: 'sym-common-diagnosis-only', name: '共通: 故障診断のみ', defaultMinutes: 20, applianceCategory: '共通', majorCategory: '修理せず', source: 'symptom-master' },
+  { id: 'sym-common-parts-ended', name: '共通: 部品供給終了', defaultMinutes: 20, applianceCategory: '共通', majorCategory: '修理せず', source: 'symptom-master' },
+  { id: 'sym-fridge-packing-replace', name: '冷蔵庫: パッキン交換', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: '扉系', source: 'symptom-master' },
+  { id: 'sym-fridge-door-not-closing', name: '冷蔵庫: フレーム・レール異常', defaultMinutes: 40, applianceCategory: '冷蔵庫', majorCategory: '扉系', source: 'symptom-master' },
+  { id: 'sym-fridge-heater-plate', name: '冷蔵庫: 扉開閉不良(ヒーター板)', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: '扉系', source: 'symptom-master' },
 ];
 
 export function ensureDefaultRepairTasks(tasks: TaskType[] | undefined): TaskType[] {
   const existing = Array.isArray(tasks) ? tasks : [];
-  const ids = new Set(existing.map(task => task.id));
+  const defaultsById = new Map(REPAIR_SYMPTOM_TASKS.map(task => [task.id, task]));
+  const retained = existing.filter(task => task.source !== 'symptom-master' || defaultsById.has(task.id));
+  const ids = new Set(retained.map(task => task.id));
   return [
-    ...existing.map(task => ({
-      ...task,
-      source: task.source || (task.id === '1' || task.id === '2' || task.id === '3' ? 'legacy' : 'manual'),
-    })),
+    ...retained.map(task => {
+      const source = task.source || (task.id === '1' || task.id === '2' || task.id === '3' ? 'legacy' : 'manual');
+      const symptomMasterTask = defaultsById.get(task.id);
+      return symptomMasterTask && source === 'symptom-master'
+        ? symptomMasterTask
+        : { ...task, source };
+    }),
     ...REPAIR_SYMPTOM_TASKS.filter(task => !ids.has(task.id)),
   ];
 }
@@ -63,7 +69,7 @@ export function selectRepairTask(
   const symptom = normalizeForMatch(input.symptomName);
   if (!category || !symptom) return undefined;
 
-  const candidates = tasks.filter(task => task.applianceCategory === category);
+  const candidates = tasks.filter(task => task.applianceCategory === category || task.applianceCategory === '共通');
   let best: { task: TaskType; score: number } | undefined;
 
   candidates.forEach(task => {
