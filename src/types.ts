@@ -12,6 +12,7 @@ export type Visit = {
   modelNumber?: string;
   applianceCategory?: string;
   symptomName?: string;
+  taskMajorCategory?: string;
   taskId?: string;
   timeWindow?: TimeWindow;
   workMinutes: number; // default 60
