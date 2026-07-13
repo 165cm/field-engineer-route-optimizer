@@ -66,7 +66,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
-const APP_VERSION = 'v1.7';
+const APP_VERSION = 'v1.8';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
