@@ -1,16 +1,16 @@
 import { TaskType } from '../types';
 
 export const REPAIR_SYMPTOM_TASKS: TaskType[] = [
-  { id: 'sym-aircon-flap-not-moving', name: 'エアコン: フラップが動かない', defaultMinutes: 120, applianceCategory: 'エアコン', majorCategory: '内機・部品交換', source: 'symptom-master' },
-  { id: 'sym-aircon-gas-leak', name: 'エアコン: ガス漏れ→熱交', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '冷媒系', source: 'symptom-master' },
-  { id: 'sym-aircon-nozzle-crack', name: 'エアコン: ノズル割れ', defaultMinutes: 120, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
+  { id: 'sym-aircon-flap-not-moving', name: 'エアコン: フラップが動かない', defaultMinutes: 100, applianceCategory: 'エアコン', majorCategory: '部品交換', source: 'symptom-master' },
+  { id: 'sym-aircon-gas-leak', name: 'エアコン: ガス漏れ→熱交', defaultMinutes: 40, applianceCategory: 'エアコン', majorCategory: '冷媒系', source: 'symptom-master' },
+  { id: 'sym-aircon-nozzle-crack', name: 'エアコン: ノズル割れ', defaultMinutes: 80, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
   { id: 'sym-aircon-pipe-clogged', name: 'エアコン: 排水パイプ詰まり', defaultMinutes: 40, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
-  { id: 'sym-aircon-dew-splash', name: 'エアコン: 露飛び', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
-  { id: 'sym-aircon-temp-humidity-sensor', name: 'エアコン: 温湿度センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '発生', source: 'symptom-master' },
+  { id: 'sym-aircon-dew-splash', name: 'エアコン: 露飛び', defaultMinutes: 40, applianceCategory: 'エアコン', majorCategory: '水漏れ', source: 'symptom-master' },
+  { id: 'sym-aircon-temp-humidity-sensor', name: 'エアコン: 温湿度センサー不良', defaultMinutes: 40, applianceCategory: 'エアコン', majorCategory: '発生', source: 'symptom-master' },
   { id: 'sym-aircon-filter-damage', name: 'エアコン: フィルター破損', defaultMinutes: 20, applianceCategory: 'エアコン', majorCategory: '破損・変形', source: 'symptom-master' },
   { id: 'sym-aircon-flap-damage', name: 'エアコン: フラップ破損', defaultMinutes: 20, applianceCategory: 'エアコン', majorCategory: '破損・変形', source: 'symptom-master' },
-  { id: 'sym-aircon-board-sensor', name: 'エアコン: 基板・センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '電装系不良', source: 'symptom-master' },
-  { id: 'sym-aircon-outdoor-inverter-board', name: 'エアコン: 室外機基板不良(インバータ)', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '電装系不良', source: 'symptom-master' },
+  { id: 'sym-aircon-board-sensor', name: 'エアコン: 基板・センサー不良', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '部品交換', source: 'symptom-master' },
+  { id: 'sym-aircon-outdoor-inverter-board', name: 'エアコン: 室外機基板不良(インバータ)', defaultMinutes: 60, applianceCategory: 'エアコン', majorCategory: '部品交換', source: 'symptom-master' },
   { id: 'sym-common-diagnosis-only', name: '共通: 故障診断のみ', defaultMinutes: 20, applianceCategory: '共通', majorCategory: '修理せず', source: 'symptom-master' },
   { id: 'sym-common-parts-ended', name: '共通: 部品供給終了', defaultMinutes: 20, applianceCategory: '共通', majorCategory: '修理せず', source: 'symptom-master' },
   { id: 'sym-fridge-packing-replace', name: '冷蔵庫: パッキン交換', defaultMinutes: 20, applianceCategory: '冷蔵庫', majorCategory: '扉系', source: 'symptom-master' },
