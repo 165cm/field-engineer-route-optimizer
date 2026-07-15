@@ -44,7 +44,7 @@ const TEXT_PROMPT = (text: string) => `以下のテキストから、家電修�
 1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを読み取ってください。
 型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
 個人名（顧客名）や長い作業メモ・用件は抽出しないでください。
-最大5件まで。
+最大10件まで。
 
 テキスト:
 ${text}
@@ -65,7 +65,7 @@ const IMAGE_PROMPT = `この画像（修理伝票やリストのスクリーン�
 ルートと時間管理や訪問前連絡に必要な住所、電話番号（あれば）、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを可能な限り読み取ってください。
 型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
 個人名（顧客名）や長い作業メモ・用件は抽出しないでください。電話番号はハイフン等の表記を画像のまま保ち、不明ならnullにしてください。
-最大5件まで。
+最大10件まで。
 
 出力は以下の配列形式にしてください。
 [
@@ -108,7 +108,7 @@ async function callGemini(parts: any[]): Promise<ParsedVisit[]> {
   if (!text) return [];
   try {
     const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed.slice(0, 5) : [];
+    return Array.isArray(parsed) ? parsed.slice(0, 10) : [];
   } catch {
     return [];
   }

@@ -4,7 +4,7 @@ export type UserPlan = 'free' | 'pro';
 
 export const PLAN_LIMITS: Record<UserPlan, { maxVisits: number; allowsGpsStart: boolean }> = {
   free: { maxVisits: 3, allowsGpsStart: false },
-  pro: { maxVisits: 5, allowsGpsStart: true },
+  pro: { maxVisits: 10, allowsGpsStart: true },
 };
 
 const STORAGE_KEY = 'user_plan_v1';
