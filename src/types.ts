@@ -8,6 +8,11 @@ export type TimeWindow = {
 export type Visit = {
   id: string;
   address: string;
+  phoneNumber?: string;
+  modelNumber?: string;
+  applianceCategory?: string;
+  symptomName?: string;
+  taskMajorCategory?: string;
   taskId?: string;
   timeWindow?: TimeWindow;
   workMinutes: number; // default 60
@@ -32,11 +37,15 @@ export type TaskType = {
   id: string;
   name: string;
   defaultMinutes: number;
+  applianceCategory?: string;
+  majorCategory?: string;
+  source?: 'symptom-master' | 'manual' | 'legacy';
 };
 
 export type Settings = {
   homeAddress: string;
   homeCoords?: google.maps.LatLngLiteral;
+  workDate?: string; // "YYYY-MM-DD" — used for calendar export
   startTime?: string; // "HH:mm" — departure time from start, default 09:00
   endLocation: 'home' | 'none' | 'custom';
   customEndAddress?: string;

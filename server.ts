@@ -7,9 +7,9 @@ dotenv.config();
 
 // Hard caps to keep per-user API spend predictable.
 // Server-side hard cap. The client further enforces a per-plan limit
-// (Free=3, Pro=15) defined in src/lib/plan.ts. Keep this in sync with
+// (Free=3, Pro=5) defined in src/lib/plan.ts. Keep this in sync with
 // the Pro plan ceiling so a Pro user can fully use parsing.
-const MAX_VISITS_PER_PARSE = 15;
+const MAX_VISITS_PER_PARSE = 5;
 
 // Pin to a stable, GA model so billing and behavior are predictable.
 // Preview model IDs (e.g. gemini-3-flash-preview) can change pricing or be
@@ -97,8 +97,9 @@ async function startServer() {
       if (!text) return res.status(400).json({ error: "Text is required" });
 
       const prompt = `以下のテキストから、家電修理の訪問先情報を抽出してJSON形式で返してください。
-1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを読み取ってください。
-個人名（顧客名）や作業メモ・用件は抽出しないでください。
+1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを読み取ってください。
+型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
+個人名（顧客名）や長い作業メモ・用件は抽出しないでください。
 最大5件まで。
 
 テキスト:
@@ -108,6 +109,8 @@ ${text}
 [
   {
     "address": "住所",
+    "applianceCategory": "エアコン | 冷蔵庫 | null",
+    "symptomName": "短い症状名 (例: ガス漏れ・冷媒不足。不明ならnull)",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。文脈から推測して。デフォルト2)"
@@ -125,6 +128,8 @@ ${text}
               type: Type.OBJECT,
               properties: {
                 address: { type: Type.STRING },
+                applianceCategory: { type: Type.STRING, nullable: true },
+                symptomName: { type: Type.STRING, nullable: true },
                 startTime: { type: Type.STRING, nullable: true },
                 endTime: { type: Type.STRING, nullable: true },
                 difficulty: { type: Type.INTEGER }
@@ -152,14 +157,18 @@ ${text}
       if (!image) return res.status(400).json({ error: "Image is required" });
 
       const prompt = `この画像（修理伝票やリストのスクリーンショット）から、家電修理の訪問先情報を抽出してJSON形式で返してください。
-ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを可能な限り読み取ってください。
-個人名（顧客名）や作業メモ・用件は抽出しないでください。
+ルートと時間管理や訪問前連絡に必要な住所、電話番号（あれば）、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを可能な限り読み取ってください。
+型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
+個人名（顧客名）や長い作業メモ・用件は抽出しないでください。電話番号はハイフン等の表記を画像のまま保ち、不明ならnullにしてください。
 最大5件まで。
 
 出力は以下の配列形式にしてください。
 [
   {
     "address": "住所",
+    "phoneNumber": "電話番号 (例: 090-1234-5678, 不明ならnull)",
+    "applianceCategory": "エアコン | 冷蔵庫 | null",
+    "symptomName": "短い症状名 (例: ガス漏れ・冷媒不足。不明ならnull)",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。内容から推測して。デフォルト2)"
@@ -190,6 +199,9 @@ ${text}
               type: Type.OBJECT,
               properties: {
                 address: { type: Type.STRING },
+                phoneNumber: { type: Type.STRING, nullable: true },
+                applianceCategory: { type: Type.STRING, nullable: true },
+                symptomName: { type: Type.STRING, nullable: true },
                 startTime: { type: Type.STRING, nullable: true },
                 endTime: { type: Type.STRING, nullable: true },
                 difficulty: { type: Type.INTEGER }

@@ -9,7 +9,7 @@
 // Real protection lives in the GCP/AI Studio side: separate Gemini API key
 // with a daily quota cap and a billing budget alert.
 
-const PASSWORD = 'setagayass';
+const PASSWORD = (process.env.VITE_DEMO_AI_PASSWORD || '').trim();
 const DAILY_LIMIT = 10;
 const STORAGE_KEY = 'demo_ai_v1';
 const UNLOCK_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -61,6 +61,7 @@ export function isAIUnlocked(): boolean {
 }
 
 export function tryUnlockAI(pw: string): boolean {
+  if (!PASSWORD) return false;
   if (pw !== PASSWORD) return false;
   const s = readState();
   writeState({ ...s, unlockedAt: Date.now() });

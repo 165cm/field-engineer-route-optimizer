@@ -13,19 +13,25 @@ const MODEL = 'gemini-2.5-flash';
 
 type ParsedVisit = {
   address: string;
+  phoneNumber?: string | null;
+  applianceCategory?: string | null;
+  symptomName?: string | null;
   startTime?: string | null;
   endTime?: string | null;
   difficulty?: number;
 };
 
-// Keep parsing focused on route/time planning. Work details and personal
-// identifiers are managed outside this app and should not be returned here.
+// Keep parsing focused on route/time planning. Personal identifiers and long
+// work notes are managed outside this app and should not be returned here.
 const RESPONSE_SCHEMA = {
   type: 'ARRAY',
   items: {
     type: 'OBJECT',
     properties: {
       address: { type: 'STRING' },
+      phoneNumber: { type: 'STRING', nullable: true },
+      applianceCategory: { type: 'STRING', nullable: true },
+      symptomName: { type: 'STRING', nullable: true },
       startTime: { type: 'STRING', nullable: true },
       endTime: { type: 'STRING', nullable: true },
       difficulty: { type: 'INTEGER' },
@@ -35,8 +41,9 @@ const RESPONSE_SCHEMA = {
 };
 
 const TEXT_PROMPT = (text: string) => `以下のテキストから、家電修理の訪問先情報を抽出してJSON形式で返してください。
-1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを読み取ってください。
-個人名（顧客名）や作業メモ・用件は抽出しないでください。
+1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを読み取ってください。
+型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
+個人名（顧客名）や長い作業メモ・用件は抽出しないでください。
 最大5件まで。
 
 テキスト:
@@ -46,6 +53,8 @@ ${text}
 [
   {
     "address": "住所",
+    "applianceCategory": "エアコン | 冷蔵庫 | null",
+    "symptomName": "短い症状名 (例: ガス漏れ・冷媒不足。不明ならnull)",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。文脈から推測して。デフォルト2)"
@@ -53,14 +62,18 @@ ${text}
 ]`;
 
 const IMAGE_PROMPT = `この画像（修理伝票やリストのスクリーンショット）から、家電修理の訪問先情報を抽出してJSON形式で返してください。
-ルートと時間管理に必要な住所、時間指定（あれば）、難易度だけを可能な限り読み取ってください。
-個人名（顧客名）や作業メモ・用件は抽出しないでください。
+ルートと時間管理や訪問前連絡に必要な住所、電話番号（あれば）、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを可能な限り読み取ってください。
+型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
+個人名（顧客名）や長い作業メモ・用件は抽出しないでください。電話番号はハイフン等の表記を画像のまま保ち、不明ならnullにしてください。
 最大5件まで。
 
 出力は以下の配列形式にしてください。
 [
   {
     "address": "住所",
+    "phoneNumber": "電話番号 (例: 090-1234-5678, 不明ならnull)",
+    "applianceCategory": "エアコン | 冷蔵庫 | null",
+    "symptomName": "短い症状名 (例: ガス漏れ・冷媒不足。不明ならnull)",
     "startTime": "HH:mm (例: 09:00, 不明ならnull)",
     "endTime": "HH:mm (例: 12:00, 不明ならnull)",
     "difficulty": 1 | 2 | 3 (1:簡単, 2:普通, 3:難しい。内容から推測して。デフォルト2)"

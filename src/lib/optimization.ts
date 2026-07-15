@@ -19,6 +19,11 @@ export function formatTime(minutes: number): string {
 export const PREP_MIN = 15;
 export const CLEANUP_MIN = 15;
 
+// For N <= this threshold, enumerate all N! permutations (exact optimal).
+// 8! = 40,320 — scores in well under a second.
+// For N > threshold, use nearest-neighbor seeds + 2-opt local search.
+const BRUTE_FORCE_THRESHOLD = 8;
+
 export type Baseline = {
   totalDurationMin: number;
   totalDistanceKm: number;
@@ -62,7 +67,7 @@ export type PlanId = 'A' | 'B' | 'C' | 'X';
 const PLAN_LABELS: Record<PlanId, string> = {
   A: '最短',
   B: '余裕',
-  C: '確実',
+  C: '短時間',
   X: 'カスタム',
 };
 
@@ -191,29 +196,157 @@ export function calculatePlanForOrder(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Permutation helpers (brute-force path, N <= BRUTE_FORCE_THRESHOLD)
+// ---------------------------------------------------------------------------
+
+function generateAllPermutations(arr: number[]): number[][] {
+  const result: number[][] = [];
+  const gen = (remaining: number[], current: number[]) => {
+    if (remaining.length === 0) { result.push(current); return; }
+    for (let i = 0; i < remaining.length; i++) {
+      const next = remaining.slice();
+      const [item] = next.splice(i, 1);
+      gen(next, [...current, item]);
+    }
+  };
+  gen(arr, []);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Heuristic helpers (large-N path, N > BRUTE_FORCE_THRESHOLD)
+// ---------------------------------------------------------------------------
+
+function matrixTravelTime(matrix: DistanceMatrixLike, from: number, to: number): number {
+  return Math.max(0, Math.ceil((matrix.rows[from]?.elements?.[to]?.duration?.value ?? 0) / 60));
+}
+
+function orderTotalTravelTime(order: number[], matrix: DistanceMatrixLike): number {
+  let total = 0;
+  let prev = 0;
+  for (const idx of order) {
+    total += matrixTravelTime(matrix, prev, idx);
+    prev = idx;
+  }
+  return total;
+}
+
+function nearestNeighborOrder(indices: number[], matrix: DistanceMatrixLike): number[] {
+  const remaining = new Set(indices);
+  const order: number[] = [];
+  let current = 0;
+  while (remaining.size > 0) {
+    let best = -1;
+    let bestTime = Infinity;
+    for (const idx of remaining) {
+      const t = matrixTravelTime(matrix, current, idx);
+      if (t < bestTime) { bestTime = t; best = idx; }
+    }
+    if (best === -1) break;
+    order.push(best);
+    remaining.delete(best);
+    current = best;
+  }
+  return order;
+}
+
+// 2-opt local search using raw travel time as the cost metric.
+// This is fast and sufficient to escape poor orderings, even though the final
+// scoring uses time-window penalties — 2-opt on travel time is a good proxy.
+function twoOptImprove(order: number[], matrix: DistanceMatrixLike): number[] {
+  let best = order.slice();
+  let improved = true;
+  while (improved) {
+    improved = false;
+    const n = best.length;
+    for (let i = 0; i < n - 1; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const candidate = [
+          ...best.slice(0, i),
+          ...best.slice(i, j + 1).reverse(),
+          ...best.slice(j + 1),
+        ];
+        if (orderTotalTravelTime(candidate, matrix) < orderTotalTravelTime(best, matrix)) {
+          best = candidate;
+          improved = true;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Generate a diverse set of candidate orderings for large N using several
+ * seeding strategies, each followed by 2-opt refinement.
+ */
+function generateHeuristicCandidates(
+  indices: number[],
+  matrix: DistanceMatrixLike,
+  visits: Visit[]
+): number[][] {
+  const seen = new Set<string>();
+  const candidates: number[][] = [];
+
+  const add = (order: number[]) => {
+    const key = order.join(',');
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(order);
+  };
+
+  // 1. Nearest-neighbor greedy from home
+  const nn = nearestNeighborOrder(indices, matrix);
+  add(nn);
+  add(twoOptImprove(nn, matrix));
+
+  // 2. Reversed NN (often a different local optimum)
+  const nnRev = [...nn].reverse();
+  add(nnRev);
+  add(twoOptImprove(nnRev, matrix));
+
+  // 3. Short-work-first seed (Plan C strategy: short jobs → long jobs)
+  const byShortWork = indices.slice().sort((a, b) =>
+    (visits[a - 1]?.workMinutes ?? 60) - (visits[b - 1]?.workMinutes ?? 60)
+  );
+  add(byShortWork);
+  add(twoOptImprove(byShortWork, matrix));
+
+  // 4. Earliest-deadline-first (favours time-window compliance)
+  const byDeadline = indices.slice().sort((a, b) => {
+    const ea = visits[a - 1]?.timeWindow?.end ? parseTime(visits[a - 1].timeWindow!.end) : 9999;
+    const eb = visits[b - 1]?.timeWindow?.end ? parseTime(visits[b - 1].timeWindow!.end) : 9999;
+    return ea - eb;
+  });
+  add(byDeadline);
+  add(twoOptImprove(byDeadline, matrix));
+
+  // 5. Furthest-first from home (visit the most distant stops before returning)
+  const byFurthest = indices.slice().sort((a, b) =>
+    matrixTravelTime(matrix, 0, b) - matrixTravelTime(matrix, 0, a)
+  );
+  add(byFurthest);
+  add(twoOptImprove(byFurthest, matrix));
+
+  return candidates;
+}
+
 export function optimizeRoutes(
   visits: Visit[],
   settings: Settings,
   matrix: DistanceMatrixLike
 ): RoutePlan[] {
   const visitCount = visits.length;
+  const indices = Array.from({ length: visitCount }, (_, i) => i + 1);
 
-  // Generate all permutations of indices [1...N]
-  const permutations: number[][] = [];
-  function generatePermutations(arr: number[], m: number[] = []) {
-    if (arr.length === 0) {
-      permutations.push(m);
-    } else {
-      for (let i = 0; i < arr.length; i++) {
-        let curr = arr.slice();
-        let next = curr.splice(i, 1);
-        generatePermutations(curr.slice(), m.concat(next));
-      }
-    }
-  }
-  generatePermutations(Array.from({ length: visitCount }, (_, i) => i + 1));
+  // Choose candidate generation strategy based on N.
+  const candidateOrders: number[][] =
+    visitCount <= BRUTE_FORCE_THRESHOLD
+      ? generateAllPermutations(indices)
+      : generateHeuristicCandidates(indices, matrix, visits);
 
-  const allPlans = permutations.map(p => {
+  const allPlans = candidateOrders.map(p => {
     const plan = calculatePlanForOrder(visits, settings, matrix, p, 'A');
     const legByVisitId = new Map(plan.legs.filter(l => l.visitId).map(l => [l.visitId, l]));
 
@@ -243,19 +376,19 @@ export function optimizeRoutes(
     });
     const scoreB = plan.totalDurationMin * 0.3 + centeringDiff + penalty;
 
-    let difficultyOrderPenalty = 0;
-    let easyBeforeNoonBonus = 0;
+    let shortWorkOrderPenalty = 0;
+    let shortWorkBeforeNoonBonus = 0;
     plan.order.forEach((v, i) => {
-      const rank = i + 1;
-      difficultyOrderPenalty += v.difficulty * rank * 5;
+      const remainingRank = visitCount - i;
+      shortWorkOrderPenalty += v.workMinutes * remainingRank * 0.4;
       const leg = legByVisitId.get(v.id);
       if (!leg) return;
       const endTime = parseTime(leg.endTime);
-      if (v.difficulty === 1 && endTime <= 12 * 60) {
-        easyBeforeNoonBonus -= 20;
+      if (v.workMinutes <= 40 && endTime <= 12 * 60) {
+        shortWorkBeforeNoonBonus -= 20;
       }
     });
-    const scoreC = plan.totalDurationMin * 0.3 + difficultyOrderPenalty + easyBeforeNoonBonus + penalty;
+    const scoreC = plan.totalDurationMin * 0.3 + shortWorkOrderPenalty + shortWorkBeforeNoonBonus + penalty;
 
     return { p, scores: { A: scoreA, B: scoreB, C: scoreC } };
   });

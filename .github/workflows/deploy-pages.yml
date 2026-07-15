@@ -38,11 +38,19 @@ jobs:
         env:
           VITE_DEMO_MODE: 'true'
           VITE_BASE: '/${{ github.event.repository.name }}/'
+          # Soft gate for demo AI usage. This is injected at build time, so it
+          # is not stored in the repository, but it is still visible in the
+          # deployed static JavaScript bundle.
+          VITE_DEMO_AI_PASSWORD: ${{ secrets.VITE_DEMO_AI_PASSWORD }}
           # Maps key is exposed in the client bundle. Restrict it in GCP:
           #   - HTTP-referrer: https://<owner>.github.io/<repo>/*
           #   - APIs: Maps JS + Geocoding + Places + Routes
           #   - Daily quotas + billing budget alert
           GOOGLE_MAPS_PLATFORM_KEY: ${{ secrets.GOOGLE_MAPS_PLATFORM_KEY }}
+          # OAuth Web Client ID for Google Calendar registration. This is not a
+          # secret, so it may be configured as either an Actions secret or an
+          # Actions variable. Prefer variables when you do not need masking.
+          GOOGLE_CALENDAR_CLIENT_ID: ${{ secrets.GOOGLE_CALENDAR_CLIENT_ID || vars.GOOGLE_CALENDAR_CLIENT_ID }}
           # Gemini key is also exposed in the bundle (the demo password gate
           # is only a soft barrier). Use a dedicated key with:
           #   - Daily quota cap on the AI Studio side (e.g. 200/day)
@@ -69,8 +77,28 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment_attempt_1.outputs.page_url || steps.deployment_attempt_2.outputs.page_url || steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
+        id: deployment_attempt_1
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Wait before retrying Pages deployment
+        if: steps.deployment_attempt_1.outcome == 'failure'
+        run: sleep 60
+
+      - name: Deploy to GitHub Pages (retry)
+        id: deployment_attempt_2
+        if: steps.deployment_attempt_1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+        continue-on-error: true
+
+      - name: Wait before final Pages deployment retry
+        if: steps.deployment_attempt_1.outcome == 'failure' && steps.deployment_attempt_2.outcome == 'failure'
+        run: sleep 120
+
+      - name: Deploy to GitHub Pages (final retry)
         id: deployment
+        if: steps.deployment_attempt_1.outcome == 'failure' && steps.deployment_attempt_2.outcome == 'failure'
         uses: actions/deploy-pages@v4

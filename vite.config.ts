@@ -18,6 +18,8 @@ export default defineConfig(({mode}) => {
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(pick('GEMINI_API_KEY')),
       'process.env.GOOGLE_MAPS_PLATFORM_KEY': JSON.stringify(pick('GOOGLE_MAPS_PLATFORM_KEY')),
+      'process.env.GOOGLE_CALENDAR_CLIENT_ID': JSON.stringify(pick('GOOGLE_CALENDAR_CLIENT_ID')),
+      'process.env.VITE_DEMO_AI_PASSWORD': JSON.stringify(pick('VITE_DEMO_AI_PASSWORD')),
     },
     resolve: {
       alias: {
