@@ -19,18 +19,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment_attempt_1.outputs.page_url || steps.deployment_attempt_2.outputs.page_url || steps.deployment.outputs.page_url }}
     steps:
-      - name: Download source
-        run: |
-          curl -fsSL \
-            "https://codeload.github.com/$GITHUB_REPOSITORY/tar.gz/$GITHUB_SHA" \
-            -o source.tar.gz
-          tar -xzf source.tar.gz --strip-components=1
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -71,28 +64,24 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: npx vite build
 
-      - name: Archive Pages artifact
-        run: |
-          tar \
-            --dereference --hard-dereference \
-            --directory dist \
-            -cvf "$RUNNER_TEMP/artifact.tar" \
-            --exclude=.git \
-            --exclude=.github \
-            --exclude=.[^/]* \
-            .
+      - name: Configure Pages
+        uses: actions/configure-pages@v4
 
       - name: Upload artifact
-        uses: ./.github/actions/upload-artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: github-pages
-          path: ${{ runner.temp }}/artifact.tar
-          retention-days: 1
-          if-no-files-found: error
+          path: dist
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment_attempt_1.outputs.page_url || steps.deployment_attempt_2.outputs.page_url || steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment_attempt_1
-        uses: ./.github/actions/deploy-pages
+        uses: actions/deploy-pages@v4
         continue-on-error: true
 
       - name: Wait before retrying Pages deployment
@@ -102,7 +91,7 @@ jobs:
       - name: Deploy to GitHub Pages (retry)
         id: deployment_attempt_2
         if: steps.deployment_attempt_1.outcome == 'failure'
-        uses: ./.github/actions/deploy-pages
+        uses: actions/deploy-pages@v4
         continue-on-error: true
 
       - name: Wait before final Pages deployment retry
@@ -112,4 +101,4 @@ jobs:
       - name: Deploy to GitHub Pages (final retry)
         id: deployment
         if: steps.deployment_attempt_1.outcome == 'failure' && steps.deployment_attempt_2.outcome == 'failure'
-        uses: ./.github/actions/deploy-pages
+        uses: actions/deploy-pages@v4

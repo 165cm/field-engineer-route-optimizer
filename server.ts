@@ -7,9 +7,9 @@ dotenv.config();
 
 // Hard caps to keep per-user API spend predictable.
 // Server-side hard cap. The client further enforces a per-plan limit
-// (Free=3, Pro=5) defined in src/lib/plan.ts. Keep this in sync with
+// (Free=3, Pro=10) defined in src/lib/plan.ts. Keep this in sync with
 // the Pro plan ceiling so a Pro user can fully use parsing.
-const MAX_VISITS_PER_PARSE = 5;
+const MAX_VISITS_PER_PARSE = 10;
 
 // Pin to a stable, GA model so billing and behavior are predictable.
 // Preview model IDs (e.g. gemini-3-flash-preview) can change pricing or be
@@ -100,7 +100,7 @@ async function startServer() {
 1行に1件とは限りません。ルートと時間管理に必要な住所、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを読み取ってください。
 型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
 個人名（顧客名）や長い作業メモ・用件は抽出しないでください。
-最大5件まで。
+最大10件まで。
 
 テキスト:
 ${text}
@@ -160,7 +160,7 @@ ${text}
 ルートと時間管理や訪問前連絡に必要な住所、電話番号（あれば）、時間指定（あれば）、難易度、機種カテゴリ、短い症状名（あれば）だけを可能な限り読み取ってください。
 型番がMSZで始まる場合はapplianceCategoryを「エアコン」、MRで始まる場合は「冷蔵庫」にしてください。型番そのものは出力しないでください。それ以外はnullにしてください。
 個人名（顧客名）や長い作業メモ・用件は抽出しないでください。電話番号はハイフン等の表記を画像のまま保ち、不明ならnullにしてください。
-最大5件まで。
+最大10件まで。
 
 出力は以下の配列形式にしてください。
 [
