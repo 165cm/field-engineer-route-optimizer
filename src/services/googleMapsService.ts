@@ -36,34 +36,47 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
 // Distance Matrix
 // ----------------------------------------------------------------------------
 
+// The Distance Matrix service rejects requests whose origins × destinations
+// product exceeds 100 elements (MAX_ELEMENTS_EXCEEDED). A full N×N matrix
+// therefore breaks at N ≥ 11 — i.e. 10 visits + start point — so the origin
+// rows are chunked into multiple requests and the rows reassembled in order.
+const MAX_MATRIX_ELEMENTS_PER_REQUEST = 100;
+
 async function getDistanceMatrixViaSdk(
   points: (string | google.maps.LatLngLiteral)[]
 ): Promise<DistanceMatrixLike> {
   const service = new google.maps.DistanceMatrixService();
-  return new Promise((resolve, reject) => {
-    service.getDistanceMatrix(
-      {
-        origins: points,
-        destinations: points,
-        travelMode: google.maps.TravelMode.DRIVING,
-      },
-      (response, status) => {
-        if (status === google.maps.DistanceMatrixStatus.OK && response) {
-          // Re-shape into our minimal DistanceMatrixLike (rows/elements/duration/distance).
-          resolve({
-            rows: response.rows.map((row: any) => ({
-              elements: row.elements.map((el: any) => ({
-                duration: el.duration ? { value: el.duration.value } : undefined,
-                distance: el.distance ? { value: el.distance.value } : undefined,
-              })),
-            })),
-          });
-        } else {
-          reject(new Error(String(status)));
+  const rowsPerRequest = Math.max(1, Math.floor(MAX_MATRIX_ELEMENTS_PER_REQUEST / points.length));
+  const rows: DistanceMatrixLike['rows'] = [];
+
+  for (let i = 0; i < points.length; i += rowsPerRequest) {
+    const originChunk = points.slice(i, i + rowsPerRequest);
+    const response = await new Promise<google.maps.DistanceMatrixResponse>((resolve, reject) => {
+      service.getDistanceMatrix(
+        {
+          origins: originChunk,
+          destinations: points,
+          travelMode: google.maps.TravelMode.DRIVING,
+        },
+        (resp, status) => {
+          if (status === google.maps.DistanceMatrixStatus.OK && resp) {
+            resolve(resp);
+          } else {
+            reject(new Error(String(status)));
+          }
         }
-      }
-    );
-  });
+      );
+    });
+    // Re-shape into our minimal DistanceMatrixLike (rows/elements/duration/distance).
+    rows.push(...response.rows.map((row: any) => ({
+      elements: row.elements.map((el: any) => ({
+        duration: el.duration ? { value: el.duration.value } : undefined,
+        distance: el.distance ? { value: el.distance.value } : undefined,
+      })),
+    })));
+  }
+
+  return { rows };
 }
 
 export async function getDistanceMatrix(
