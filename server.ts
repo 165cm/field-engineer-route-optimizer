@@ -269,21 +269,30 @@ ${text}
         if (p && typeof p.lat === "number" && typeof p.lng === "number") return `${p.lat},${p.lng}`;
         throw new Error("invalid point");
       };
-      const joined = points.map(encode).join("|");
-      const url = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
-      url.searchParams.set("origins", joined);
-      url.searchParams.set("destinations", joined);
-      url.searchParams.set("mode", "driving");
-      url.searchParams.set("language", "ja");
-      url.searchParams.set("key", MAPS_KEY);
-      const r = await fetch(url);
-      const data = await r.json() as any;
-      if (data.status !== "OK") {
-        return res.status(502).json({ error: data.status || "MATRIX_ERROR" });
+      const encoded = points.map(encode);
+      const destinationsJoined = encoded.join("|");
+      // The Distance Matrix API caps each request at 100 elements
+      // (origins × destinations), so a full N×N matrix breaks at N ≥ 11
+      // (10 visits + start point). Chunk the origin rows and reassemble.
+      const rowsPerRequest = Math.max(1, Math.floor(100 / encoded.length));
+      const rows: any[] = [];
+      for (let i = 0; i < encoded.length; i += rowsPerRequest) {
+        const url = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
+        url.searchParams.set("origins", encoded.slice(i, i + rowsPerRequest).join("|"));
+        url.searchParams.set("destinations", destinationsJoined);
+        url.searchParams.set("mode", "driving");
+        url.searchParams.set("language", "ja");
+        url.searchParams.set("key", MAPS_KEY);
+        const r = await fetch(url);
+        const data = await r.json() as any;
+        if (data.status !== "OK") {
+          return res.status(502).json({ error: data.status || "MATRIX_ERROR" });
+        }
+        rows.push(...data.rows);
       }
       // Pass through the rows/elements shape directly — it already matches what
       // optimization.ts reads (duration.value, distance.value).
-      res.json({ rows: data.rows });
+      res.json({ rows });
     } catch (error) {
       console.error("DistanceMatrix Error:", error);
       res.status(500).json({ error: "Distance matrix failed" });
