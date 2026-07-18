@@ -52,7 +52,7 @@ import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } fr
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 import { ScheduleClock } from './components/ScheduleClock';
 import { difficultyColor } from './lib/visitColors';
-import { clusterByPixelDistance } from './lib/mapClustering';
+import { clusterByPixelDistance, maxPairwiseDistanceM, formatClusterSpread } from './lib/mapClustering';
 import { ensureDefaultRepairTasks, inferApplianceCategoryFromModel, selectRepairTask } from './lib/repairTasks';
 import {
   GoogleCalendarAuthError,
@@ -4598,21 +4598,45 @@ function MapComponent({ plan, settings }: { plan: RoutePlan, settings: Settings 
         <AdvancedMarker position={settings.homeCoords || { lat: 0, lng: 0 }}>
           <Pin background="#3b82f6" glyphColor="#fff" />
         </AdvancedMarker>
-        {pinClusters.map(cluster => (
-          <AdvancedMarker key={cluster.items[0].visit.id} position={cluster.coords}>
-            <div className="flex items-center gap-0.5">
-              {cluster.items.map(({ visit, orderIdx }) => (
-                <div
-                  key={visit.id}
-                  className="text-white w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg"
-                  style={{ background: difficultyColor(visit.difficulty).work }}
-                >
-                  {orderIdx + 1}
-                </div>
-              ))}
+        {pinClusters.map(cluster => {
+          const badges = cluster.items.map(({ visit, orderIdx }) => (
+            <div
+              key={visit.id}
+              className="text-white w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg"
+              style={{ background: difficultyColor(visit.difficulty).work }}
+            >
+              {orderIdx + 1}
             </div>
-          </AdvancedMarker>
-        ))}
+          ));
+          if (cluster.items.length === 1) {
+            return (
+              <AdvancedMarker key={cluster.items[0].visit.id} position={cluster.coords}>
+                {badges[0]}
+              </AdvancedMarker>
+            );
+          }
+          // Grouped pins: speech-bubble callout with the numbers side by
+          // side and the distance between the farthest two members, so the
+          // user can judge whether one parking spot covers both on foot.
+          const spreadM = maxPairwiseDistanceM(
+            cluster.items
+              .map(({ visit }) => visit.coords)
+              .filter((c): c is { lat: number; lng: number } => !!c)
+          );
+          return (
+            <AdvancedMarker key={cluster.items[0].visit.id} position={cluster.coords}>
+              <div className="flex flex-col items-center">
+                <div className="rounded-xl border-2 border-white bg-slate-900/95 px-1.5 py-1 shadow-lg">
+                  <div className="flex items-center gap-1">{badges}</div>
+                  <p className="mt-1 text-center text-[10px] font-bold leading-none text-white num-font whitespace-nowrap">
+                    {formatClusterSpread(spreadM)}
+                  </p>
+                </div>
+                <div className="h-0 w-0 border-x-[7px] border-x-transparent border-t-[8px] border-t-white" />
+              </div>
+            </AdvancedMarker>
+          );
+        })}
       </Map>
       {/* Map mode toggle */}
       <div className="absolute top-3 right-3 z-10 flex items-center bg-slate-900/85 backdrop-blur-sm border border-ui rounded-lg overflow-hidden shadow-xl">

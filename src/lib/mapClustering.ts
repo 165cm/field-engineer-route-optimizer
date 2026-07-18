@@ -43,3 +43,35 @@ export function clusterByPixelDistance<T>(
   });
   return clusters.map(({ coords, items: clusterItems }) => ({ coords, items: clusterItems }));
 }
+
+const EARTH_RADIUS_M = 6371000;
+
+export function haversineDistanceM(a: LatLng, b: LatLng): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h));
+}
+
+// Spread of a cluster = distance between its two farthest members. For the
+// common 2-visit case this is simply the distance between them.
+export function maxPairwiseDistanceM(points: LatLng[]): number {
+  let max = 0;
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      max = Math.max(max, haversineDistanceM(points[i], points[j]));
+    }
+  }
+  return max;
+}
+
+// Label shown inside a grouped pin so the user can judge e.g. whether one
+// parking spot between the jobs covers both on foot.
+export function formatClusterSpread(distanceM: number): string {
+  if (distanceM < 15) return '同一地点';
+  if (distanceM < 1000) return `約${Math.round(distanceM / 10) * 10}m`;
+  return `約${(distanceM / 1000).toFixed(1)}km`;
+}
