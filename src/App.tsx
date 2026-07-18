@@ -52,6 +52,7 @@ import { isAIUnlocked, tryUnlockAI, lockAI, getDailyUsage, consumeAIRequest } fr
 import { parseVisitsFromTextClient, parseVisitsFromImageClient } from './services/geminiClientService';
 import { ScheduleClock } from './components/ScheduleClock';
 import { difficultyColor } from './lib/visitColors';
+import { clusterByPixelDistance } from './lib/mapClustering';
 import { ensureDefaultRepairTasks, inferApplianceCategoryFromModel, selectRepairTask } from './lib/repairTasks';
 import {
   GoogleCalendarAuthError,
@@ -1614,9 +1615,19 @@ function MainApp() {
       const optimizedPlans = orderRoutePlans(optimizeRoutes(updatedVisits, updatedSettings, matrix)
         .map(plan => insertLunchBreak(plan, updatedSettings.lunchBreakMinutes || 0))
         .map(normalizeRoutePlan));
-      // Seed the manual ("カスタム") plan with the best automatic order so the
+      // Seed the manual ("カスタム") plan. A previously hand-tuned order is
+      // preserved across re-optimizations (e.g. after fixing an address
+      // typo): visits that still exist keep their position, removed ones are
+      // dropped, and newly added ones are appended in input order. Only when
+      // no manual order exists yet is the best automatic order used so the
       // user has a sensible starting point to nudge from.
-      const customSeed = optimizedPlans[0]?.order.map(v => v.id) || [];
+      const survivingCustomOrder = customOrder.filter(id => updatedVisits.some(v => v.id === id));
+      const customSeed = survivingCustomOrder.length > 0
+        ? [
+            ...survivingCustomOrder,
+            ...updatedVisits.filter(v => !survivingCustomOrder.includes(v.id)).map(v => v.id),
+          ]
+        : optimizedPlans[0]?.order.map(v => v.id) || [];
       const customPlan = insertLunchBreak(
         calculatePlanForOrder(
           updatedVisits,
@@ -4404,6 +4415,29 @@ function MapComponent({ plan, settings }: { plan: RoutePlan, settings: Settings 
   const modeCfg = MAP_MODE_CONFIG[mapMode];
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
 
+  // Track the live zoom so overlapping pins can be regrouped as the user
+  // zooms in/out (two jobs at the same building overlap at any zoom; two
+  // jobs a street apart separate once zoomed in far enough).
+  const [zoom, setZoom] = useState(12);
+  useEffect(() => {
+    if (!map) return;
+    const sync = () => {
+      const z = map.getZoom();
+      if (typeof z === 'number') setZoom(z);
+    };
+    sync();
+    const listener = map.addListener('zoom_changed', sync);
+    return () => listener.remove();
+  }, [map]);
+
+  // Pin badge is w-7 (28px); treat pins closer than that as overlapping.
+  const pinClusters = clusterByPixelDistance(
+    plan.order.map((visit, orderIdx) => ({ visit, orderIdx })),
+    item => item.visit.coords,
+    zoom,
+    30
+  );
+
   // Draw the route polyline.
   useEffect(() => {
     if (!map || !plan) return;
@@ -4564,17 +4598,20 @@ function MapComponent({ plan, settings }: { plan: RoutePlan, settings: Settings 
         <AdvancedMarker position={settings.homeCoords || { lat: 0, lng: 0 }}>
           <Pin background="#3b82f6" glyphColor="#fff" />
         </AdvancedMarker>
-        {plan.order.map((v, i) => (
-          v.coords && (
-            <AdvancedMarker key={v.id} position={v.coords}>
-               <div
-                 className="text-white w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg"
-                 style={{ background: difficultyColor(v.difficulty).work }}
-               >
-                 {i + 1}
-               </div>
-            </AdvancedMarker>
-          )
+        {pinClusters.map(cluster => (
+          <AdvancedMarker key={cluster.items[0].visit.id} position={cluster.coords}>
+            <div className="flex items-center gap-0.5">
+              {cluster.items.map(({ visit, orderIdx }) => (
+                <div
+                  key={visit.id}
+                  className="text-white w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 border-white shadow-lg"
+                  style={{ background: difficultyColor(visit.difficulty).work }}
+                >
+                  {orderIdx + 1}
+                </div>
+              ))}
+            </div>
+          </AdvancedMarker>
         ))}
       </Map>
       {/* Map mode toggle */}
