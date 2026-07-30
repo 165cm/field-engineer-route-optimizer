@@ -20,6 +20,14 @@ export type Visit = {
   coords?: google.maps.LatLngLiteral;
 };
 
+// Field notes the engineer toggles on a visit while working through the route.
+// Kept outside `Visit` on purpose: plans store snapshots of `Visit`, so markers
+// live in their own store keyed by visit id to avoid stale copies.
+export type VisitMarker = {
+  parking?: boolean;   // true = 駐車場あり
+  letter?: string;     // any single A-Z mark for site-specific notes
+};
+
 export type Leg = {
   fromName: string;
   toName: string;
