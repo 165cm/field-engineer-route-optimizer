@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { Visit, RoutePlan, Settings, Difficulty, Leg } from './types';
+import { Visit, RoutePlan, Settings, Difficulty, Leg, VisitMarker } from './types';
 import { geocodeAddress, getDistanceMatrix } from './services/googleMapsService';
 import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
 import type { DistanceMatrixLike } from './services/googleMapsService';
@@ -67,7 +67,7 @@ const API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
 const hasValidKey = Boolean(API_KEY) && API_KEY !== 'YOUR_API_KEY';
 const CALENDAR_TIME_ZONE = 'Asia/Tokyo';
-const APP_VERSION = 'v1.8';
+const APP_VERSION = 'v1.9';
 
 // Components
 const IconButton = ({ icon: Icon, onClick, className, disabled }: any) => (
@@ -320,12 +320,16 @@ function normalizeRoutePlan(plan: RoutePlan): RoutePlan {
 const PLAN_DISPLAY_ORDER: RoutePlan['id'][] = ['C', 'A', 'B', 'X'];
 const ROUTE_SESSION_STORAGE_KEY = 'repair_route_session_v1';
 const VISIT_HISTORY_STORAGE_KEY = 'repair_visit_history_v1';
+const VISIT_MARKER_STORAGE_KEY = 'repair_visit_markers_v1';
 type AppTab = 'input' | 'result' | 'history';
 
 type StoredRouteSession = {
   plans: RoutePlan[];
   baseline: Baseline | null;
   customOrder: string[];
+  // True once the user has hand-tuned the custom order, so re-optimizations
+  // keep showing the custom plan instead of falling back to an automatic one.
+  customOrderPinned: boolean;
   matrix: DistanceMatrixLike;
   activePlanIdx: number;
   visitSignature: string;
@@ -443,6 +447,46 @@ function upsertVisitHistory(history: VisitHistoryEntry[], visits: Visit[]): Visi
     .slice(0, 300);
 }
 
+const MARKER_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+function normalizeMarkerLetter(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const letter = value.trim().toUpperCase();
+  return MARKER_LETTERS.includes(letter) ? letter : undefined;
+}
+
+/** Drops empty entries so an untouched visit never occupies storage. */
+function compactVisitMarkers(markers: Record<string, VisitMarker>): Record<string, VisitMarker> {
+  const next: Record<string, VisitMarker> = {};
+  Object.entries(markers).forEach(([id, marker]) => {
+    if (!marker) return;
+    const entry: VisitMarker = {};
+    if (marker.parking) entry.parking = true;
+    const letter = normalizeMarkerLetter(marker.letter);
+    if (letter) entry.letter = letter;
+    if (entry.parking || entry.letter) next[id] = entry;
+  });
+  return next;
+}
+
+function readVisitMarkers(): Record<string, VisitMarker> {
+  try {
+    const raw = localStorage.getItem(VISIT_MARKER_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return compactVisitMarkers(parsed as Record<string, VisitMarker>);
+  } catch {
+    return {};
+  }
+}
+
+function writeVisitMarkers(markers: Record<string, VisitMarker>) {
+  try {
+    localStorage.setItem(VISIT_MARKER_STORAGE_KEY, JSON.stringify(markers));
+  } catch {}
+}
+
 function buildVisitSignature(visits: Visit[]): string {
   return JSON.stringify(visits.map(v => ({
     id: v.id,
@@ -479,6 +523,7 @@ function readStoredRouteSession(visits: Visit[], settings: Settings): StoredRout
       ...parsed,
       plans: orderRoutePlans(parsed.plans),
       customOrder: Array.isArray(parsed.customOrder) ? parsed.customOrder : [],
+      customOrderPinned: parsed.customOrderPinned === true,
       activePlanIdx: Number.isInteger(parsed.activePlanIdx) ? parsed.activePlanIdx : 0,
       baseline: parsed.baseline || null,
     };
@@ -491,6 +536,7 @@ function persistRouteSession({
   plans,
   baseline,
   customOrder,
+  customOrderPinned,
   matrix,
   visits,
   settings,
@@ -499,6 +545,7 @@ function persistRouteSession({
   plans: RoutePlan[];
   baseline: Baseline | null;
   customOrder: string[];
+  customOrderPinned: boolean;
   matrix: DistanceMatrixLike;
   visits: Visit[];
   settings: Settings;
@@ -509,6 +556,7 @@ function persistRouteSession({
       plans: orderRoutePlans(plans),
       baseline,
       customOrder,
+      customOrderPinned,
       matrix,
       activePlanIdx,
       visitSignature: buildVisitSignature(visits),
@@ -1036,6 +1084,11 @@ function MainApp() {
   } : null);
   // Visit IDs in the user-chosen order for the "カスタム" plan.
   const [customOrder, setCustomOrder] = useState<string[]>(() => restoredRouteSessionRef.current?.customOrder || []);
+  // Sticky once the user reorders the custom plan: re-optimizations then keep
+  // the custom plan selected instead of jumping back to an automatic案.
+  const [customOrderPinned, setCustomOrderPinned] = useState<boolean>(
+    () => restoredRouteSessionRef.current?.customOrderPinned === true
+  );
   const [baseline, setBaseline] = useState<Baseline | null>(() => restoredRouteSessionRef.current?.baseline || null);
   const [completedVisitIds, setCompletedVisitIds] = useState<Set<string>>(new Set());
   const toggleCompleted = (id: string) => {
@@ -1044,6 +1097,31 @@ function MainApp() {
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  };
+
+  // Per-visit field markers (駐車場 / 任意アルファベット). Persisted by visit id
+  // so they survive reloads and re-optimizations.
+  const [visitMarkers, setVisitMarkers] = useState<Record<string, VisitMarker>>(() => readVisitMarkers());
+  const [markerLetterPickerId, setMarkerLetterPickerId] = useState<string | null>(null);
+  const updateVisitMarkers = (updater: (prev: Record<string, VisitMarker>) => Record<string, VisitMarker>) => {
+    setVisitMarkers(prev => {
+      const next = compactVisitMarkers(updater(prev));
+      writeVisitMarkers(next);
+      return next;
+    });
+  };
+  const toggleParkingMarker = (id: string) => {
+    updateVisitMarkers(prev => ({
+      ...prev,
+      [id]: { ...prev[id], parking: !prev[id]?.parking },
+    }));
+  };
+  const setMarkerLetter = (id: string, letter: string | null) => {
+    updateVisitMarkers(prev => ({
+      ...prev,
+      [id]: { ...prev[id], letter: letter ? letter.toUpperCase() : undefined },
+    }));
+    setMarkerLetterPickerId(null);
   };
   const [activeTab, setActiveTab] = useState<AppTab>(() => restoredRouteSessionRef.current ? 'result' : 'input');
   const [activePlanIdx, setActivePlanIdx] = useState(() => {
@@ -1067,7 +1145,7 @@ function MainApp() {
 
   // Recompute the custom plan when its order changes. Falls back to a no-op
   // if optimization context hasn't been captured yet.
-  const recomputeCustomPlan = (nextOrder: string[]) => {
+  const recomputeCustomPlan = (nextOrder: string[], pinned = true) => {
     const ctx = optContextRef.current;
     if (!ctx) return;
     const orderIndices = nextOrder
@@ -1083,6 +1161,7 @@ function MainApp() {
         plans: nextPlans,
         baseline,
         customOrder: nextOrder,
+        customOrderPinned: pinned,
         matrix: ctx.matrix,
         visits: ctx.visits,
         settings: ctx.settings,
@@ -1100,6 +1179,7 @@ function MainApp() {
     const next = customOrder.slice();
     [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
     setCustomOrder(next);
+    setCustomOrderPinned(true);
     recomputeCustomPlan(next);
   };
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -1203,6 +1283,7 @@ function MainApp() {
         plans: optimizedPlans,
         baseline: baselineResult,
         customOrder: [],
+        customOrderPinned: false,
         matrix,
         visits: updatedVisits,
         settings: updatedSettings,
@@ -1298,6 +1379,19 @@ function MainApp() {
       const next = upsertVisitHistory(prev, visits);
       if (next === prev) return prev;
       writeVisitHistory(next);
+      return next;
+    });
+  }, [visits]);
+
+  // Forget markers of visits the user removed, so storage can't grow forever.
+  useEffect(() => {
+    setVisitMarkers(prev => {
+      const ids = new Set(visits.map(v => v.id));
+      const staleIds = Object.keys(prev).filter(id => !ids.has(id));
+      if (staleIds.length === 0) return prev;
+      const next = { ...prev };
+      staleIds.forEach(id => { delete next[id]; });
+      writeVisitMarkers(next);
       return next;
     });
   }, [visits]);
@@ -1622,7 +1716,8 @@ function MainApp() {
       // no manual order exists yet is the best automatic order used so the
       // user has a sensible starting point to nudge from.
       const survivingCustomOrder = customOrder.filter(id => updatedVisits.some(v => v.id === id));
-      const customSeed = survivingCustomOrder.length > 0
+      const keepCustomOrder = customOrderPinned && survivingCustomOrder.length > 0;
+      const customSeed = keepCustomOrder
         ? [
             ...survivingCustomOrder,
             ...updatedVisits.filter(v => !survivingCustomOrder.includes(v.id)).map(v => v.id),
@@ -1641,9 +1736,14 @@ function MainApp() {
         updatedSettings.lunchBreakMinutes || 0
       );
       const nextPlans = orderRoutePlans([...optimizedPlans, normalizeRoutePlan(customPlan)]);
+      // When a hand-tuned order exists, open the result on the カスタム案 so the
+      // user's own ordering stays in front instead of an automatic案 replacing it.
+      const customPlanIdx = nextPlans.findIndex(p => p.id === 'X');
+      const nextActivePlanIdx = keepCustomOrder && customPlanIdx >= 0 ? customPlanIdx : 0;
       // Persist context for later re-computation when the user reorders.
       optContextRef.current = { visits: updatedVisits, settings: updatedSettings, matrix };
       setCustomOrder(customSeed);
+      setCustomOrderPinned(keepCustomOrder);
       const baselineResult = computeInputOrderBaseline(updatedVisits, updatedSettings, matrix);
       setBaseline(baselineResult);
 
@@ -1652,14 +1752,25 @@ function MainApp() {
         plans: nextPlans,
         baseline: baselineResult,
         customOrder: customSeed,
+        customOrderPinned: keepCustomOrder,
         matrix,
         visits: updatedVisits,
         settings: updatedSettings,
-        activePlanIdx: 0,
+        activePlanIdx: nextActivePlanIdx,
       });
       setCompletedVisitIds(new Set());
       setActiveTab('result');
-      setActivePlanIdx(0);
+      setActivePlanIdx(nextActivePlanIdx);
+      if (keepCustomOrder) {
+        const addedCount = customSeed.length - survivingCustomOrder.length;
+        showNotice({
+          kind: 'info',
+          title: 'カスタム順を引き継いで表示しています',
+          detail: addedCount > 0
+            ? `前回設定した並び順を維持し、新しい訪問先${addedCount}件を末尾に追加しました。自動案は上のタブから比較できます。`
+            : '前回設定した並び順を維持しました。自動案は上のタブから比較できます。',
+        });
+      }
     } catch (error) {
       console.error(error);
       const { title, detail } = explainError(error, 'ルート計算に失敗しました');
@@ -1765,6 +1876,23 @@ function MainApp() {
       setCalendarRegistrationStatus('idle');
     }
   };
+  // Drops the hand-tuned order and re-seeds the custom plan from the best
+  // automatic案, so re-optimizations stop forcing the custom view.
+  const resetCustomOrderToAuto = () => {
+    const scores = computePlanScores(displayPlans);
+    const source = displayPlans[scores[0]?.idx ?? -1] || displayPlans.find(p => p.id !== 'X');
+    if (!source) return;
+    const nextOrder = source.order.map(v => v.id);
+    setCustomOrder(nextOrder);
+    setCustomOrderPinned(false);
+    recomputeCustomPlan(nextOrder, false);
+    showNotice({
+      kind: 'info',
+      title: 'カスタム順をリセットしました',
+      detail: `「${source.label}」案の順番を初期値にしました。次の再計算では自動案を表示します。`,
+    });
+  };
+
   const selectPlan = (idx: number) => {
     setActivePlanIdx(idx);
     const ctx = optContextRef.current;
@@ -1773,6 +1901,7 @@ function MainApp() {
       plans: displayPlans,
       baseline,
       customOrder,
+      customOrderPinned,
       matrix: ctx.matrix,
       visits: ctx.visits,
       settings: ctx.settings,
@@ -2388,6 +2517,9 @@ function MainApp() {
                             {score.score}点{idx === recommendedIdx ? '・推奨' : ''}
                           </span>
                         )}
+                        {plan.id === 'X' && customOrderPinned && (
+                          <span className="block mt-0.5 text-[9px] opacity-80">維持中</span>
+                        )}
                       </button>
                     );
                   });
@@ -2417,6 +2549,26 @@ function MainApp() {
                 </>
               )}
 
+              {/* Custom-order status bar — explains that the hand-tuned order
+                  survives re-optimization, and offers a way back to自動案. */}
+              {activePlan.id === 'X' && (
+                <div className="px-4 pt-3 flex items-start justify-between gap-3">
+                  <p className="text-[10px] leading-relaxed text-secondary">
+                    {customOrderPinned
+                      ? '並び替えたカスタム順は、編集後に再計算しても優先して表示されます。'
+                      : '↑↓で並び替えると、編集後の再計算でもこの順番を優先して表示します。'}
+                  </p>
+                  {customOrderPinned && (
+                    <button
+                      onClick={resetCustomOrderToAuto}
+                      className="shrink-0 px-2.5 py-1.5 rounded-md border border-ui bg-slate-800 text-[10px] font-bold text-gray-200 hover:bg-slate-700 transition-colors"
+                    >
+                      自動順にリセット
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Path List */}
               <div className="p-4 space-y-3 custom-scrollbar">
                 {activePlan.legs.filter(isCompleteLeg).map((leg, idx) => {
@@ -2428,6 +2580,9 @@ function MainApp() {
                     ? activePlan.order.findIndex(v => v.id === visit.id) + 1
                     : idx + 1;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
+                  const marker = visit ? visitMarkers[visit.id] : undefined;
+                  const hasParking = marker?.parking === true;
+                  const markerLetter = marker?.letter || '';
                   const phoneNumber = visit?.phoneNumber?.trim() || '';
                   const addressParts = visit ? formatVisitAddress(visit.address) : null;
                   return (
@@ -2481,7 +2636,39 @@ function MainApp() {
                               </span>
                             )}
                           </div>
-                          <div className="flex gap-1 shrink-0">
+                          <div className="flex items-center justify-end gap-1 shrink-0 flex-wrap">
+                            {/* Field markers — same row as the完了 checkbox, in the
+                                right-hand gutter. Parking availability plus one
+                                free-form A-Z mark per visit. */}
+                            <button
+                              onClick={() => toggleParkingMarker(visit.id)}
+                              title={hasParking ? '駐車場あり（クリックで「なし」に切替）' : '駐車場なし（クリックで「あり」に切替）'}
+                              aria-label="駐車場の有無を切り替える"
+                              aria-pressed={hasParking}
+                              className={cn(
+                                "shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center text-xs font-extrabold transition-colors",
+                                hasParking
+                                  ? "bg-sky-500/25 border-sky-400/60 text-sky-100"
+                                  : "bg-slate-800 border-slate-600 text-slate-500 hover:border-sky-500/50 hover:text-sky-300 hover:bg-sky-500/10"
+                              )}
+                            >
+                              P
+                            </button>
+                            <button
+                              onClick={() => setMarkerLetterPickerId(prev => (prev === visit.id ? null : visit.id))}
+                              title={markerLetter ? `その他マーク「${markerLetter}」（クリックで変更・解除）` : 'その他マークを付ける（任意のアルファベット）'}
+                              aria-label="その他マークを設定する"
+                              aria-pressed={Boolean(markerLetter)}
+                              aria-expanded={markerLetterPickerId === visit.id}
+                              className={cn(
+                                "shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center text-xs font-extrabold transition-colors",
+                                markerLetter
+                                  ? "bg-amber-500/25 border-amber-400/60 text-amber-100"
+                                  : "bg-slate-800 border-slate-600 text-slate-500 hover:border-amber-500/50 hover:text-amber-300 hover:bg-amber-500/10"
+                              )}
+                            >
+                              {markerLetter || <Plus className="w-4 h-4" />}
+                            </button>
                             {activePlan.id === 'X' && (
                               <>
                                 <button
@@ -2504,6 +2691,46 @@ function MainApp() {
                             )}
                           </div>
                         </div>
+
+                        {/* Letter picker for the "その他要素" marker. Rendered inline
+                            rather than as a popover because the card clips overflow. */}
+                        {markerLetterPickerId === visit.id && (
+                          <div className="mb-3 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/5">
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <p className="text-[10px] font-bold text-amber-200">その他マークを選択（A〜Z）</p>
+                              <button
+                                onClick={() => setMarkerLetterPickerId(null)}
+                                aria-label="マーク選択を閉じる"
+                                className="p-1 rounded hover:bg-slate-700/60 text-slate-400"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-9 gap-1">
+                              {MARKER_LETTERS.map(letter => (
+                                <button
+                                  key={letter}
+                                  onClick={() => setMarkerLetter(visit.id, letter)}
+                                  className={cn(
+                                    "h-7 rounded text-[11px] font-bold transition-colors",
+                                    markerLetter === letter
+                                      ? "bg-amber-500 text-slate-900"
+                                      : "bg-slate-800 text-gray-200 hover:bg-slate-700"
+                                  )}
+                                >
+                                  {letter}
+                                </button>
+                              ))}
+                            </div>
+                            <button
+                              onClick={() => setMarkerLetter(visit.id, null)}
+                              disabled={!markerLetter}
+                              className="mt-2 w-full h-7 rounded-md border border-ui bg-slate-800 text-[10px] font-bold text-gray-200 hover:bg-slate-700 disabled:opacity-40"
+                            >
+                              マークを解除
+                            </button>
+                          </div>
+                        )}
 
                         <h3 className={cn("text-lg font-bold mb-2 leading-tight", isCompleted && "line-through text-secondary")}>
                           {(() => {
