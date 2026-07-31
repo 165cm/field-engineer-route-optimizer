@@ -447,12 +447,24 @@ function upsertVisitHistory(history: VisitHistoryEntry[], visits: Visit[]): Visi
     .slice(0, 300);
 }
 
+// The parking marker is always "P"; the second marker's letter and name are set
+// once in 現場マーク設定 and reused for every visit.
 const MARKER_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+const DEFAULT_OTHER_MARKER_LETTER = 'T';
+const DEFAULT_OTHER_MARKER_LABEL = '三脚';
 
 function normalizeMarkerLetter(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const letter = value.trim().toUpperCase();
   return MARKER_LETTERS.includes(letter) ? letter : undefined;
+}
+
+function otherMarkerLetterOf(settings: Settings): string {
+  return normalizeMarkerLetter(settings.otherMarkerLetter) || DEFAULT_OTHER_MARKER_LETTER;
+}
+
+function otherMarkerLabelOf(settings: Settings): string {
+  return settings.otherMarkerLabel?.trim() || DEFAULT_OTHER_MARKER_LABEL;
 }
 
 /** Drops empty entries so an untouched visit never occupies storage. */
@@ -462,9 +474,8 @@ function compactVisitMarkers(markers: Record<string, VisitMarker>): Record<strin
     if (!marker) return;
     const entry: VisitMarker = {};
     if (marker.parking) entry.parking = true;
-    const letter = normalizeMarkerLetter(marker.letter);
-    if (letter) entry.letter = letter;
-    if (entry.parking || entry.letter) next[id] = entry;
+    if (marker.other) entry.other = true;
+    if (entry.parking || entry.other) next[id] = entry;
   });
   return next;
 }
@@ -475,7 +486,17 @@ function readVisitMarkers(): Record<string, VisitMarker> {
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return compactVisitMarkers(parsed as Record<string, VisitMarker>);
+    // Markers used to carry a per-visit letter; any letter set back then simply
+    // means "the second marker is on".
+    const migrated: Record<string, VisitMarker> = {};
+    Object.entries(parsed as Record<string, VisitMarker & { letter?: string }>).forEach(([id, marker]) => {
+      if (!marker) return;
+      migrated[id] = {
+        parking: marker.parking === true,
+        other: marker.other === true || Boolean(normalizeMarkerLetter(marker.letter)),
+      };
+    });
+    return compactVisitMarkers(migrated);
   } catch {
     return {};
   }
@@ -1041,6 +1062,11 @@ function MainApp() {
       workDate: normalizeStoredWorkDate(parsed.workDate),
       startTime: parsed.startTime || '09:00',
       lunchBreakMinutes: [0, 15, 30, 45, 60].includes(parsedLunchBreak) ? parsedLunchBreak : 0,
+      otherMarkerEnabled: parsed.otherMarkerEnabled !== false,
+      otherMarkerLetter: normalizeMarkerLetter(parsed.otherMarkerLetter) || DEFAULT_OTHER_MARKER_LETTER,
+      otherMarkerLabel: typeof parsed.otherMarkerLabel === 'string' && parsed.otherMarkerLabel.trim()
+        ? parsed.otherMarkerLabel.trim()
+        : DEFAULT_OTHER_MARKER_LABEL,
       tasks: ensureDefaultRepairTasks(parsed.tasks || [
         { id: '1', name: '点検', defaultMinutes: 30 },
         { id: '2', name: '修理', defaultMinutes: 60 },
@@ -1102,7 +1128,6 @@ function MainApp() {
   // Per-visit field markers (駐車場 / 任意アルファベット). Persisted by visit id
   // so they survive reloads and re-optimizations.
   const [visitMarkers, setVisitMarkers] = useState<Record<string, VisitMarker>>(() => readVisitMarkers());
-  const [markerLetterPickerId, setMarkerLetterPickerId] = useState<string | null>(null);
   const updateVisitMarkers = (updater: (prev: Record<string, VisitMarker>) => Record<string, VisitMarker>) => {
     setVisitMarkers(prev => {
       const next = compactVisitMarkers(updater(prev));
@@ -1110,19 +1135,15 @@ function MainApp() {
       return next;
     });
   };
-  const toggleParkingMarker = (id: string) => {
+  const toggleVisitMarker = (id: string, key: 'parking' | 'other') => {
     updateVisitMarkers(prev => ({
       ...prev,
-      [id]: { ...prev[id], parking: !prev[id]?.parking },
+      [id]: { ...prev[id], [key]: !prev[id]?.[key] },
     }));
   };
-  const setMarkerLetter = (id: string, letter: string | null) => {
-    updateVisitMarkers(prev => ({
-      ...prev,
-      [id]: { ...prev[id], letter: letter ? letter.toUpperCase() : undefined },
-    }));
-    setMarkerLetterPickerId(null);
-  };
+  const otherMarkerEnabled = settings.otherMarkerEnabled !== false;
+  const otherMarkerLetter = otherMarkerLetterOf(settings);
+  const otherMarkerLabel = otherMarkerLabelOf(settings);
   const [activeTab, setActiveTab] = useState<AppTab>(() => restoredRouteSessionRef.current ? 'result' : 'input');
   const [activePlanIdx, setActivePlanIdx] = useState(() => {
     const restoredIdx = restoredRouteSessionRef.current?.activePlanIdx ?? 0;
@@ -1185,6 +1206,7 @@ function MainApp() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [showTasksSettings, setShowTasksSettings] = useState(false);
   const [showStartEndSettings, setShowStartEndSettings] = useState(false);
+  const [showMarkerSettings, setShowMarkerSettings] = useState(false);
   const [inputText, setInputText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
   const [isParsingImage, setIsParsingImage] = useState(false);
@@ -2073,6 +2095,36 @@ function MainApp() {
               </div>
             </div>
 
+            {/* Field markers */}
+            <div className="bg-card p-4 rounded-xl border border-ui">
+              <div className="flex justify-between items-center mb-3">
+                <div className="flex items-center gap-2 text-xs text-secondary font-bold uppercase tracking-wider">
+                  <Layers className="w-4 h-4 text-blue-500" /> 現場マーク
+                </div>
+                <button
+                  onClick={() => setShowMarkerSettings(true)}
+                  className="text-[10px] bg-slate-800 text-blue-400 hover:text-blue-300 font-bold px-2 py-1 rounded border border-ui"
+                >
+                  編集
+                </button>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="flex items-center gap-1.5 rounded-lg border border-sky-400/40 bg-sky-500/10 pl-1.5 pr-2.5 py-1">
+                  <span className="h-6 w-6 rounded-md bg-sky-500/25 border border-sky-400/60 text-sky-100 text-[11px] font-extrabold flex items-center justify-center">P</span>
+                  <span className="text-xs font-medium text-sky-100">駐車場</span>
+                </span>
+                {otherMarkerEnabled ? (
+                  <span className="flex items-center gap-1.5 rounded-lg border border-amber-400/40 bg-amber-500/10 pl-1.5 pr-2.5 py-1">
+                    <span className="h-6 w-6 rounded-md bg-amber-500/25 border border-amber-400/60 text-amber-100 text-[11px] font-extrabold flex items-center justify-center">{otherMarkerLetter}</span>
+                    <span className="text-xs font-medium text-amber-100">{otherMarkerLabel}</span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-secondary">2つめのマークは使用しない設定です。</span>
+                )}
+              </div>
+              <p className="text-[10px] text-secondary mt-2">ルート結果の各訪問先で、作業済みチェックの右からオン・オフを切り替えられます。</p>
+            </div>
+
             <div className="flex justify-between items-end mt-4 mb-1">
                <div className="flex items-center gap-3">
                  <h2 className="text-sm font-bold text-gray-200">訪問先リスト</h2>
@@ -2582,7 +2634,7 @@ function MainApp() {
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
                   const marker = visit ? visitMarkers[visit.id] : undefined;
                   const hasParking = marker?.parking === true;
-                  const markerLetter = marker?.letter || '';
+                  const hasOtherMarker = marker?.other === true;
                   const phoneNumber = visit?.phoneNumber?.trim() || '';
                   const addressParts = visit ? formatVisitAddress(visit.address) : null;
                   return (
@@ -2638,10 +2690,10 @@ function MainApp() {
                           </div>
                           <div className="flex items-center justify-end gap-1 shrink-0 flex-wrap">
                             {/* Field markers — same row as the完了 checkbox, in the
-                                right-hand gutter. Parking availability plus one
-                                free-form A-Z mark per visit. */}
+                                right-hand gutter. Parking is fixed to "P"; the
+                                second marker comes from 現場マーク設定. */}
                             <button
-                              onClick={() => toggleParkingMarker(visit.id)}
+                              onClick={() => toggleVisitMarker(visit.id, 'parking')}
                               title={hasParking ? '駐車場あり（クリックで「なし」に切替）' : '駐車場なし（クリックで「あり」に切替）'}
                               aria-label="駐車場の有無を切り替える"
                               aria-pressed={hasParking}
@@ -2654,21 +2706,24 @@ function MainApp() {
                             >
                               P
                             </button>
-                            <button
-                              onClick={() => setMarkerLetterPickerId(prev => (prev === visit.id ? null : visit.id))}
-                              title={markerLetter ? `その他マーク「${markerLetter}」（クリックで変更・解除）` : 'その他マークを付ける（任意のアルファベット）'}
-                              aria-label="その他マークを設定する"
-                              aria-pressed={Boolean(markerLetter)}
-                              aria-expanded={markerLetterPickerId === visit.id}
-                              className={cn(
-                                "shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center text-xs font-extrabold transition-colors",
-                                markerLetter
-                                  ? "bg-amber-500/25 border-amber-400/60 text-amber-100"
-                                  : "bg-slate-800 border-slate-600 text-slate-500 hover:border-amber-500/50 hover:text-amber-300 hover:bg-amber-500/10"
-                              )}
-                            >
-                              {markerLetter || <Plus className="w-4 h-4" />}
-                            </button>
+                            {otherMarkerEnabled && (
+                              <button
+                                onClick={() => toggleVisitMarker(visit.id, 'other')}
+                                title={hasOtherMarker
+                                  ? `${otherMarkerLabel}あり（クリックで「なし」に切替）`
+                                  : `${otherMarkerLabel}なし（クリックで「あり」に切替）`}
+                                aria-label={`${otherMarkerLabel}の有無を切り替える`}
+                                aria-pressed={hasOtherMarker}
+                                className={cn(
+                                  "shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center text-xs font-extrabold transition-colors",
+                                  hasOtherMarker
+                                    ? "bg-amber-500/25 border-amber-400/60 text-amber-100"
+                                    : "bg-slate-800 border-slate-600 text-slate-500 hover:border-amber-500/50 hover:text-amber-300 hover:bg-amber-500/10"
+                                )}
+                              >
+                                {otherMarkerLetter}
+                              </button>
+                            )}
                             {activePlan.id === 'X' && (
                               <>
                                 <button
@@ -2691,46 +2746,6 @@ function MainApp() {
                             )}
                           </div>
                         </div>
-
-                        {/* Letter picker for the "その他要素" marker. Rendered inline
-                            rather than as a popover because the card clips overflow. */}
-                        {markerLetterPickerId === visit.id && (
-                          <div className="mb-3 p-2.5 rounded-lg border border-amber-500/30 bg-amber-500/5">
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <p className="text-[10px] font-bold text-amber-200">その他マークを選択（A〜Z）</p>
-                              <button
-                                onClick={() => setMarkerLetterPickerId(null)}
-                                aria-label="マーク選択を閉じる"
-                                className="p-1 rounded hover:bg-slate-700/60 text-slate-400"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                            <div className="grid grid-cols-9 gap-1">
-                              {MARKER_LETTERS.map(letter => (
-                                <button
-                                  key={letter}
-                                  onClick={() => setMarkerLetter(visit.id, letter)}
-                                  className={cn(
-                                    "h-7 rounded text-[11px] font-bold transition-colors",
-                                    markerLetter === letter
-                                      ? "bg-amber-500 text-slate-900"
-                                      : "bg-slate-800 text-gray-200 hover:bg-slate-700"
-                                  )}
-                                >
-                                  {letter}
-                                </button>
-                              ))}
-                            </div>
-                            <button
-                              onClick={() => setMarkerLetter(visit.id, null)}
-                              disabled={!markerLetter}
-                              className="mt-2 w-full h-7 rounded-md border border-ui bg-slate-800 text-[10px] font-bold text-gray-200 hover:bg-slate-700 disabled:opacity-40"
-                            >
-                              マークを解除
-                            </button>
-                          </div>
-                        )}
 
                         <h3 className={cn("text-lg font-bold mb-2 leading-tight", isCompleted && "line-through text-secondary")}>
                           {(() => {
@@ -3194,6 +3209,20 @@ function MainApp() {
               setShowTasksSettings(false);
             }}
             onClose={() => setShowTasksSettings(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Field Marker Modal */}
+      <AnimatePresence>
+        {showMarkerSettings && (
+          <MarkerSettingsModal
+            settings={settings}
+            onSave={(val) => {
+              setSettings(val);
+              setShowMarkerSettings(false);
+            }}
+            onClose={() => setShowMarkerSettings(false)}
           />
         )}
       </AnimatePresence>
@@ -4074,6 +4103,141 @@ function TasksModal({ settings, onSave, onClose }: { settings: Settings, onSave:
         <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
            <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">キャンセル</button>
            <button onClick={handleSave} className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30">設定を反映</button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function MarkerSettingsModal({ settings, onSave, onClose }: { settings: Settings, onSave: (s: Settings) => void, onClose: () => void }) {
+  const [enabled, setEnabled] = useState(settings.otherMarkerEnabled !== false);
+  const [letter, setLetter] = useState(otherMarkerLetterOf(settings));
+  const [label, setLabel] = useState(otherMarkerLabelOf(settings));
+  const trimmedLabel = label.trim();
+  const labelError = enabled && !trimmedLabel ? 'マークの名前を入力してください。' : '';
+
+  const handleSave = () => {
+    if (labelError) return;
+    onSave({
+      ...settings,
+      otherMarkerEnabled: enabled,
+      otherMarkerLetter: letter,
+      otherMarkerLabel: trimmedLabel || DEFAULT_OTHER_MARKER_LABEL,
+    });
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+    >
+      <motion.div
+        initial={{ scale: 0.95 }}
+        animate={{ scale: 1 }}
+        exit={{ scale: 0.95 }}
+        className="bg-card w-full max-w-md flex flex-col max-h-[85vh] rounded-2xl shadow-2xl border border-ui overflow-hidden"
+      >
+        <div className="p-4 border-b border-ui flex justify-between items-center bg-slate-900">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <Layers className="w-4 h-4 text-blue-500" /> 現場マーク設定
+          </h2>
+          <button onClick={onClose} className="p-1 text-secondary hover:text-white"><XCircle className="w-5 h-5"/></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar">
+          <p className="text-[11px] text-secondary leading-relaxed">
+            ここで決めたマークが、ルート結果のすべての訪問先に同じ形で表示されます。訪問先ごとに文字を選ぶ必要はありません。
+          </p>
+
+          {/* Parking (fixed) */}
+          <div>
+            <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest mb-1.5">1つめ（固定）</label>
+            <div className="flex items-center gap-2.5 p-2.5 rounded-lg border border-ui bg-slate-800/40">
+              <span className="h-8 w-8 rounded-lg bg-sky-500/25 border border-sky-400/60 text-sky-100 text-xs font-extrabold flex items-center justify-center">P</span>
+              <div>
+                <p className="text-sm font-medium">駐車場の有無</p>
+                <p className="text-[10px] text-secondary">「P」は駐車場専用のため変更できません。</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Configurable marker */}
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <label className="block text-[10px] text-secondary font-bold uppercase tracking-widest">2つめ（自由設定）</label>
+              <label className="flex items-center gap-1.5 text-[10px] font-bold text-secondary cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(e) => setEnabled(e.target.checked)}
+                  className="accent-blue-500"
+                />
+                使用する
+              </label>
+            </div>
+
+            <div className={cn("space-y-3 p-3 rounded-lg border border-ui bg-slate-800/40", !enabled && "opacity-40 pointer-events-none")}>
+              <div>
+                <label className="block text-[10px] text-secondary font-bold mb-1">マークの名前</label>
+                <input
+                  className={cn(
+                    "w-full bg-[#1A1D23] border rounded-lg px-3 py-2 text-sm outline-none font-medium",
+                    labelError ? "border-red-500/60 focus:border-red-400" : "border-ui focus:border-blue-500/50"
+                  )}
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                  placeholder="例: 三脚"
+                  maxLength={12}
+                />
+                {labelError
+                  ? <p className="text-[10px] text-red-400 mt-1">{labelError}</p>
+                  : <p className="text-[10px] text-secondary mt-1">ボタンの説明文に使います（例: 「三脚あり」）。</p>}
+              </div>
+
+              <div>
+                <label className="block text-[10px] text-secondary font-bold mb-1">ボタンの文字</label>
+                <div className="grid grid-cols-9 gap-1">
+                  {MARKER_LETTERS.map(item => (
+                    <button
+                      key={item}
+                      onClick={() => setLetter(item)}
+                      disabled={item === 'P'}
+                      title={item === 'P' ? '「P」は駐車場マークで使用中です' : undefined}
+                      className={cn(
+                        "h-7 rounded text-[11px] font-bold transition-colors",
+                        letter === item
+                          ? "bg-amber-500 text-slate-900"
+                          : "bg-slate-800 text-gray-200 hover:bg-slate-700",
+                        item === 'P' && "opacity-30 cursor-not-allowed hover:bg-slate-800"
+                      )}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-[10px] text-secondary font-bold">表示イメージ</span>
+                <span className="h-8 w-8 rounded-lg bg-sky-500/25 border border-sky-400/60 text-sky-100 text-xs font-extrabold flex items-center justify-center">P</span>
+                <span className="h-8 w-8 rounded-lg bg-amber-500/25 border border-amber-400/60 text-amber-100 text-xs font-extrabold flex items-center justify-center">{letter}</span>
+                <span className="text-[10px] text-secondary">{trimmedLabel || DEFAULT_OTHER_MARKER_LABEL}あり</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-ui bg-slate-900/80 flex gap-3">
+          <button onClick={onClose} className="flex-1 py-3 text-secondary text-xs font-bold uppercase tracking-widest hover:text-white transition-colors">キャンセル</button>
+          <button
+            onClick={handleSave}
+            disabled={Boolean(labelError)}
+            className="flex-2 py-3 px-6 bg-blue-600 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            設定を反映
+          </button>
         </div>
       </motion.div>
     </motion.div>

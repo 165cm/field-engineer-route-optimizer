@@ -25,7 +25,7 @@ export type Visit = {
 // live in their own store keyed by visit id to avoid stale copies.
 export type VisitMarker = {
   parking?: boolean;   // true = 駐車場あり
-  letter?: string;     // any single A-Z mark for site-specific notes
+  other?: boolean;     // true = the user-defined mark applies (letter comes from Settings)
 };
 
 export type Leg = {
@@ -59,6 +59,11 @@ export type Settings = {
   customEndAddress?: string;
   customEndCoords?: google.maps.LatLngLiteral;
   lunchBreakMinutes?: number; // 0, 15, 30, 45, 60 — inserted around route midpoint
+  // Second field marker, configured once and applied to every visit.
+  // The parking marker is fixed to "P"; this one is user-defined.
+  otherMarkerEnabled?: boolean; // default true
+  otherMarkerLetter?: string;   // single A-Z, default "T"
+  otherMarkerLabel?: string;    // shown in tooltips, default "三脚"
   tasks: TaskType[];
 };
 
