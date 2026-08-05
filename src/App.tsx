@@ -42,7 +42,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { Visit, RoutePlan, Settings, Difficulty, Leg, VisitMarker } from './types';
+import { Visit, RoutePlan, Settings, Difficulty, Leg, VisitMarker, ParkingState } from './types';
 import { geocodeAddress, getDistanceMatrix } from './services/googleMapsService';
 import { optimizeRoutes, computeInputOrderBaseline, calculatePlanForOrder, Baseline } from './lib/optimization';
 import type { DistanceMatrixLike } from './services/googleMapsService';
@@ -449,6 +449,16 @@ function upsertVisitHistory(history: VisitHistoryEntry[], visits: Visit[]): Visi
 
 const MARKER_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
+/**
+ * Reads a stored parking value. `true` is the pre-tri-state shape ("駐車場あり")
+ * and keeps meaning 'yes' so markers saved before this change survive.
+ */
+function normalizeParkingState(value: unknown): ParkingState | undefined {
+  if (value === true || value === 'yes') return 'yes';
+  if (value === 'no') return 'no';
+  return undefined;
+}
+
 function normalizeMarkerLetter(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const letter = value.trim().toUpperCase();
@@ -461,7 +471,8 @@ function compactVisitMarkers(markers: Record<string, VisitMarker>): Record<strin
   Object.entries(markers).forEach(([id, marker]) => {
     if (!marker) return;
     const entry: VisitMarker = {};
-    if (marker.parking) entry.parking = true;
+    const parking = normalizeParkingState(marker.parking);
+    if (parking) entry.parking = parking;
     const letter = normalizeMarkerLetter(marker.letter);
     if (letter) entry.letter = letter;
     if (entry.parking || entry.letter) next[id] = entry;
@@ -1110,11 +1121,15 @@ function MainApp() {
       return next;
     });
   };
-  const toggleParkingMarker = (id: string) => {
-    updateVisitMarkers(prev => ({
-      ...prev,
-      [id]: { ...prev[id], parking: !prev[id]?.parking },
-    }));
+  // 未確認（グレー）→ あり（◯/グリーン）→ なし（✗/レッド）→ 未確認 の3状態巡回。
+  // 「聞き忘れ」と「聞いたけどなかった」を取り違えないための区別。
+  const cycleParkingMarker = (id: string) => {
+    updateVisitMarkers(prev => {
+      const current = normalizeParkingState(prev[id]?.parking);
+      const next: ParkingState | undefined =
+        current === undefined ? 'yes' : current === 'yes' ? 'no' : undefined;
+      return { ...prev, [id]: { ...prev[id], parking: next } };
+    });
   };
   const setMarkerLetter = (id: string, letter: string | null) => {
     updateVisitMarkers(prev => ({
@@ -2581,7 +2596,7 @@ function MainApp() {
                     : idx + 1;
                   const isCompleted = visit ? completedVisitIds.has(visit.id) : false;
                   const marker = visit ? visitMarkers[visit.id] : undefined;
-                  const hasParking = marker?.parking === true;
+                  const parkingState = normalizeParkingState(marker?.parking);
                   const markerLetter = marker?.letter || '';
                   const phoneNumber = visit?.phoneNumber?.trim() || '';
                   const addressParts = visit ? formatVisitAddress(visit.address) : null;
@@ -2641,18 +2656,41 @@ function MainApp() {
                                 right-hand gutter. Parking availability plus one
                                 free-form A-Z mark per visit. */}
                             <button
-                              onClick={() => toggleParkingMarker(visit.id)}
-                              title={hasParking ? '駐車場あり（クリックで「なし」に切替）' : '駐車場なし（クリックで「あり」に切替）'}
-                              aria-label="駐車場の有無を切り替える"
-                              aria-pressed={hasParking}
+                              onClick={() => cycleParkingMarker(visit.id)}
+                              title={
+                                parkingState === 'yes' ? '駐車場：あり（タップで「なし」）'
+                                : parkingState === 'no' ? '駐車場：なし（タップで未確認に戻す）'
+                                : '駐車場：未確認（タップで「あり」）'
+                              }
+                              aria-label={
+                                parkingState === 'yes' ? '駐車場あり（タップで切替）'
+                                : parkingState === 'no' ? '駐車場なし（タップで切替）'
+                                : '駐車場は未確認（タップで切替）'
+                              }
                               className={cn(
-                                "shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center text-xs font-extrabold transition-colors",
-                                hasParking
-                                  ? "bg-sky-500/25 border-sky-400/60 text-sky-100"
-                                  : "bg-slate-800 border-slate-600 text-slate-500 hover:border-sky-500/50 hover:text-sky-300 hover:bg-sky-500/10"
+                                "relative shrink-0 h-9 w-9 rounded-lg border flex items-center justify-center text-xs font-extrabold transition-colors",
+                                parkingState === 'yes'
+                                  ? "bg-green-500/25 border-green-400/60 text-green-100"
+                                  : parkingState === 'no'
+                                  ? "bg-red-500/25 border-red-400/60 text-red-100"
+                                  : "bg-slate-800 border-slate-600 text-slate-500 hover:border-slate-400 hover:text-slate-300"
                               )}
                             >
                               P
+                              {/* ◯ / ✗ badge — color alone is too easy to misread
+                                  in sunlight, and 未確認 must look untouched. */}
+                              {parkingState && (
+                                <span
+                                  className={cn(
+                                    "absolute -top-1 -right-1 h-4 w-4 rounded-full border flex items-center justify-center text-[9px] font-black leading-none",
+                                    parkingState === 'yes'
+                                      ? "bg-green-500 border-green-300 text-slate-900"
+                                      : "bg-red-500 border-red-300 text-white"
+                                  )}
+                                >
+                                  {parkingState === 'yes' ? '◯' : '✗'}
+                                </span>
+                              )}
                             </button>
                             <button
                               onClick={() => setMarkerLetterPickerId(prev => (prev === visit.id ? null : visit.id))}
