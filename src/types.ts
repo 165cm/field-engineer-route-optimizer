@@ -23,9 +23,13 @@ export type Visit = {
 // Field notes the engineer toggles on a visit while working through the route.
 // Kept outside `Visit` on purpose: plans store snapshots of `Visit`, so markers
 // live in their own store keyed by visit id to avoid stale copies.
+// Tri-state on purpose: undefined means "まだ聞いていない", which must stay
+// distinguishable from "聞いたけど駐車場はなかった" (`'no'`).
+export type ParkingState = 'yes' | 'no';
+
 export type VisitMarker = {
-  parking?: boolean;   // true = 駐車場あり
-  letter?: string;     // any single A-Z mark for site-specific notes
+  parking?: ParkingState; // 'yes' = 駐車場あり / 'no' = なし / undefined = 未確認
+  letter?: string;        // any single A-Z mark for site-specific notes
 };
 
 export type Leg = {
